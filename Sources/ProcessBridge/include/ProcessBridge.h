@@ -1,0 +1,7 @@
+#include <stdint.h>
+#include <stddef.h>
+typedef struct { int32_t pid, ppid; uint32_t uid, status; uint64_t start, unique, parent_unique, memory, cpu; int32_t version; char path[4096], cwd[4096]; } DPProcess;
+int dp_pids(int32_t *buffer, int count);
+int dp_read(int32_t pid, DPProcess *out);
+int dp_args(int32_t pid, char *buffer, int capacity);
+int dp_signal(DPProcess expected, int signal);
