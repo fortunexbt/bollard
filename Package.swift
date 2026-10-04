@@ -7,7 +7,8 @@ let package = Package(
   targets: [
     .target(name: "ProcessBridge"), .target(name: "DevPortsCore", dependencies: ["ProcessBridge"]),
     .executableTarget(name: "DevPorts", dependencies: ["DevPortsCore"]),
+    .executableTarget(name: "DevPortsBench", dependencies: ["DevPortsCore"]),
     .executableTarget(
       name: "DevPortsChecks", dependencies: ["DevPortsCore", "ProcessBridge"],
       path: "Tests/DevPortsCoreTests"),
-  ], swiftLanguageModes: [.v5])
+  ], swiftLanguageModes: [.v6])

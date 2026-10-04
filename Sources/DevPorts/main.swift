@@ -16,7 +16,7 @@ if CommandLine.arguments.contains("--login-status") {
     }
     print("\(scan.count) processes inspected in \(Int(scan.duration*1000))ms")
   } catch {
-    fputs("\(error.localizedDescription)\n", stderr)
+    FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
     exit(1)
   }
 } else {

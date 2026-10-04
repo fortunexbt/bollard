@@ -5,8 +5,20 @@ import ServiceManagement
 import SwiftUI
 
 enum PendingAction { case stop, restart }
+enum WorkloadSort: String, CaseIterable {
+  case name = "Name"
+  case memory = "Memory"
+  case cpu = "CPU"
+  case uptime = "Uptime"
+}
 
 @MainActor final class Store: ObservableObject {
+  @Published var sort =
+    WorkloadSort(rawValue: UserDefaults.standard.string(forKey: "sort") ?? "Name") ?? .name
+  {
+    didSet { UserDefaults.standard.set(sort.rawValue, forKey: "sort") }
+  }
+  @Published var notice: String?
   @Published var search = ""
   @Published var background = false
   @Published var showTree = false
@@ -15,54 +27,83 @@ enum PendingAction { case stop, restart }
   @Published var busy = false
   @Published var selected: Identity?
   @Published var pending: PendingAction?
+  @Published var confirmation: Workload?
   @Published var acting: Identity?
   @Published var messages: [Identity: String] = [:]
   var visible = false
-  private let queue = DispatchQueue(label: "devports.scan", qos: .utility)
-  nonisolated(unsafe) private let scanner = Scanner()
+  private var refreshPending = false
+  private let monitor = ProcessMonitor()
+  private var exits: [Identity: DispatchSourceProcess] = [:]
   func refresh() {
-    guard !busy else { return }
+    guard !busy else {
+      refreshPending = true
+      return
+    }
     busy = true
-    queue.async { [self] in
-      let result = Result { try scanner.scan() }
-      DispatchQueue.main.async { [self] in
+    Task {
+      defer {
         busy = false
-        switch result {
-        case .success(let next):
-          scan = next
-          error = nil
-          if let id = selected, !next.workloads.contains(where: { $0.id == id }) {
-            selected = nil
-            pending = nil
-          }
-          messages = messages.filter { entry in next.workloads.contains { $0.id == entry.key } }
-        case .failure(let e): error = e.localizedDescription
+        if refreshPending {
+          refreshPending = false
+          refresh()
         }
       }
+      do {
+        let next = try await monitor.scan()
+        scan = next
+        error = nil
+        if let id = selected, !next.workloads.contains(where: { $0.id == id }) {
+          selected = nil
+          pending = nil
+        }
+        messages = messages.filter { entry in next.workloads.contains { $0.id == entry.key } }
+        observeExits(next.workloads)
+      } catch { self.error = error.localizedDescription }
+    }
+  }
+  private func observeExits(_ workloads: [Workload]) {
+    // A transient helper exiting is not a workload exit; avoid refresh storms in worker trees.
+    let live = Set(workloads.map(\.id))
+    for id in Set(exits.keys).subtracting(live) { exits.removeValue(forKey: id)?.cancel() }
+    for id in live where exits[id] == nil {
+      let source = DispatchSource.makeProcessSource(
+        identifier: id.pid, eventMask: .exit, queue: .main)
+      source.setEventHandler { [weak self] in
+        Task { @MainActor in self?.refresh() }
+      }
+      exits[id] = source
+      source.resume()
     }
   }
   func act(_ w: Workload, restart: Bool) {
     guard acting == nil, error == nil else { return }
+    if restart, let reason = w.restartReason {
+      notice = reason
+      return
+    }
     acting = w.id
     pending = nil
-    queue.async {
-      let result = Result { try Controller.stop(w) }
-      DispatchQueue.main.async { [self] in
+    notice = nil
+    Task {
+      defer {
         acting = nil
-        switch result {
-        case .success:
-          if restart {
-            do { try launch(w) } catch { messages[w.id] = error.localizedDescription }
-          } else {
-            messages[w.id] = "Stopped"
-          }
-        case .failure(let e): messages[w.id] = e.localizedDescription
-        }
         refresh()
+      }
+      do {
+        try await Task.detached(priority: .userInitiated) { try Controller.stop(w) }.value
+        if restart {
+          try await launch(w)
+          notice = "Launch command opened in Terminal for \(w.name)."
+        } else {
+          notice = "Stopped \(w.name)."
+        }
+      } catch {
+        notice = error.localizedDescription
+        messages[w.id] = error.localizedDescription
       }
     }
   }
-  func launch(_ w: Workload) throws {
+  func launch(_ w: Workload) async throws {
     if let reason = w.restartReason { throw SafetyError(reason) }
     let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
       "Library/Application Support/DevPorts")
@@ -75,7 +116,7 @@ enum PendingAction { case stop, restart }
       "#!/bin/zsh\n/bin/rm -- \"$0\"\ncd -- \(shellQuote(w.root.cwd)) || exit 1\nexec \(command)\n"
     try script.write(to: file, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
-    NSWorkspace.shared.open(
+    _ = try await NSWorkspace.shared.open(
       [file],
       withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
       configuration: NSWorkspace.OpenConfiguration())
@@ -90,6 +131,13 @@ struct Panel: View {
       store.search.isEmpty
         || "\($0.name) \($0.kind.name) \($0.ports) \($0.provenance)"
           .localizedCaseInsensitiveContains(store.search)
+    }.sorted { a, b in
+      switch store.sort {
+      case .name: return (a.name, a.root.pid) < (b.name, b.root.pid)
+      case .memory: return a.memory == b.memory ? a.root.pid < b.root.pid : a.memory > b.memory
+      case .cpu: return a.cpu == b.cpu ? a.root.pid < b.root.pid : a.cpu > b.cpu
+      case .uptime: return a.root.identity.start < b.root.identity.start
+      }
     }
   }
   var servers: [Workload] { rows.filter { !$0.ports.isEmpty } }
@@ -110,6 +158,10 @@ struct Panel: View {
           Image(systemName: "arrow.clockwise").frame(width: 22, height: 22)
         }.buttonStyle(.borderless).help("Refresh · ⌘R").keyboardShortcut("r")
         Menu {
+          Picker("Sort by", selection: $store.sort) {
+            ForEach(WorkloadSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+          }
+          Divider()
           Toggle(
             "Launch at login",
             isOn: Binding(
@@ -155,6 +207,17 @@ struct Panel: View {
       if let error = store.error {
         Label(error, systemImage: "exclamationmark.triangle").font(.system(size: 11))
           .foregroundStyle(.orange).padding(.horizontal, 20).padding(.bottom, 10)
+      }
+      if let notice = store.notice {
+        HStack {
+          Text(notice).font(.system(size: 11)).lineLimit(3)
+          Spacer()
+          Button {
+            store.notice = nil
+          } label: {
+            Image(systemName: "xmark")
+          }.buttonStyle(.plain)
+        }.padding(.horizontal, 14).padding(.bottom, 7)
       }
       ScrollView {
         VStack(spacing: 5) {
@@ -331,10 +394,16 @@ struct Panel: View {
         }.frame(width: 80)
         Spacer()
         if store.acting == w.id { ProgressView().controlSize(.small) }
-        Button("Restart") { store.pending = .restart }.disabled(
+        Button("Restart") {
+          store.confirmation = w
+          store.pending = .restart
+        }.disabled(
           w.restartReason != nil || store.acting != nil || store.error != nil
         ).help(w.restartReason ?? "Review command before restarting")
-        Button("Stop") { store.pending = .stop }.foregroundStyle(.red).disabled(
+        Button("Stop") {
+          store.confirmation = w
+          store.pending = .stop
+        }.foregroundStyle(.red).disabled(
           w.refusal != nil || store.acting != nil || store.error != nil
         ).help(w.refusal ?? "Stop this workload")
       }.controlSize(.small)
@@ -344,7 +413,7 @@ struct Panel: View {
       if let message = store.messages[w.id] {
         Text(message).font(.system(size: 11)).foregroundStyle(.orange)
       }
-      if let pending = store.pending {
+      if let pending = store.pending, let confirmed = store.confirmation, confirmed.id == w.id {
         VStack(alignment: .leading, spacing: 9) {
           Text(pending == .stop ? "Stop \(w.name)?" : "Restart \(w.name) in Terminal?").font(
             .system(size: 12, weight: .semibold))
@@ -352,17 +421,17 @@ struct Panel: View {
             pending == .stop
               ? (w.usesMinecraftController
                 ? "Asks your Minecraft controller to stop the server, save its world, and finish its backup. No force kill."
-                : "Gracefully terminates these \(w.members.count) processes after checking their identities and tree again.")
+                : "Gracefully terminates these \(confirmed.members.count) processes after checking their identities and tree again.")
               : "Runs the command above in its original directory using a fresh Terminal environment. Inherited variables and input cannot be recovered."
           ).font(.system(size: 11)).foregroundStyle(.secondary)
           HStack {
-            Text(w.members.map { "\($0.pid)" }.joined(separator: " · ")).font(
+            Text(confirmed.members.map { "\($0.pid)" }.joined(separator: " · ")).font(
               .system(size: 10, design: .monospaced)
             ).foregroundStyle(.tertiary).lineLimit(2)
             Spacer()
             Button("Cancel") { store.pending = nil }
             Button(pending == .stop ? "Stop workload" : "Restart") {
-              store.act(w, restart: pending == .restart)
+              store.act(confirmed, restart: pending == .restart)
             }.tint(pending == .stop ? .red : accent).buttonStyle(.borderedProminent)
           }
         }.padding(11).background(.primary.opacity(0.04)).clipShape(
@@ -418,10 +487,6 @@ final class MenuPanel: NSPanel {
     observation = store.objectWillChange.sink { [weak self] in
       DispatchQueue.main.async { self?.updatePanel() }
     }
-    outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown])
-    { [weak self] _ in
-      DispatchQueue.main.async { self?.close() }
-    }
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) {
       [weak self] event in
       if event.type == .keyDown && event.keyCode == 53 {
@@ -452,7 +517,8 @@ final class MenuPanel: NSPanel {
   }
   func updatePanel() {
     let count = store.scan?.workloads.filter { !$0.ports.isEmpty }.count ?? 0
-    item.button?.title = count > 0 ? " \(count)" : ""
+    let title = count > 0 ? " \(count)" : ""
+    if item.button?.title != title { item.button?.title = title }
     guard store.visible, let button = item.button, let window = button.window,
       let screen = window.screen
     else { return }
@@ -463,9 +529,9 @@ final class MenuPanel: NSPanel {
     let desired =
       186.0 + Double(max(servers, 1) + background) * 54 + (store.selected == nil ? 0 : 240)
       + (store.pending == nil ? 0 : 110) + (store.showTree ? 100 : 0)
-    panel.setFrame(
-      PanelPlacement.frame(anchor: anchor, screen: screen.visibleFrame, desiredHeight: desired),
-      display: true)
+    let frame = PanelPlacement.frame(
+      anchor: anchor, screen: screen.visibleFrame, desiredHeight: desired)
+    if panel.frame != frame { panel.setFrame(frame, display: true) }
 
   }
   @objc func toggle() {
@@ -478,6 +544,7 @@ final class MenuPanel: NSPanel {
       updatePanel()
       NSApp.activate(ignoringOtherApps: true)
       panel.makeKeyAndOrderFront(nil)
+      observeOutsideClicks()
     }
   }
   func scheduleRefresh() {
@@ -488,15 +555,35 @@ final class MenuPanel: NSPanel {
     }
     timer?.tolerance = store.visible ? 1 : 5
   }
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard store.acting == nil else {
+      store.notice = "A shutdown is still finishing. Quit again once it completes."
+      return .terminateCancel
+    }
+    return .terminateNow
+  }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
   {
     if !panel.isVisible { toggle() }
     return false
   }
+  func observeOutsideClicks() {
+    guard outsideMonitor == nil else { return }
+    outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown])
+    { [weak self] _ in
+      Task { @MainActor in self?.close() }
+    }
+  }
   func close() {
+    guard store.visible || panel.isVisible else { return }
+    if let monitor = outsideMonitor {
+      NSEvent.removeMonitor(monitor)
+      outsideMonitor = nil
+    }
     panel.orderOut(nil)
     store.visible = false
     scheduleRefresh()
     store.pending = nil
+    store.confirmation = nil
   }
 }

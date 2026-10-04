@@ -45,3 +45,38 @@ int dp_signal(DPProcess expected,int sig) {
  // Kernel validates PID + generation atomically. Never fall back to kill(pid).
  return proc_signal_with_audittoken(&token,sig);
 }
+
+#include <arpa/inet.h>
+int dp_tcp_ports(int32_t pid, int32_t *ports, int capacity) {
+ errno=0;
+ int needed=proc_pidinfo(pid,PROC_PIDLISTFDS,0,NULL,0);
+ if(needed<=0) return errno ? -errno : 0;
+ struct proc_fdinfo *fds=NULL; int bytes=0, allocated=0;
+ for(int retry=0;retry<3;retry++) {
+  allocated=needed+32*(int)sizeof(struct proc_fdinfo);
+  if(allocated>16*1024*1024) {free(fds);return -EOVERFLOW;}
+  struct proc_fdinfo *next=realloc(fds,allocated);
+  if(!next) {free(fds);return -ENOMEM;} fds=next;
+  errno=0;
+  bytes=proc_pidinfo(pid,PROC_PIDLISTFDS,0,fds,allocated);
+  if(bytes<=0 && errno) {int e=errno;free(fds);return -e;}
+  if(bytes<allocated) break;
+  needed=allocated*2;
+ }
+ if(bytes>=allocated) {free(fds);return -EOVERFLOW;}
+ int count=0;
+ for(int i=0;i<bytes/(int)sizeof(*fds);i++) {
+  if(fds[i].proc_fdtype!=PROX_FDTYPE_SOCKET) continue;
+  struct socket_fdinfo info={0};
+  int size=proc_pidfdinfo(pid,fds[i].proc_fd,PROC_PIDFDSOCKETINFO,&info,sizeof(info));
+  if(size != sizeof(info)) {
+   if(errno==EBADF || errno==ESRCH || errno==ENOENT || errno==ENOTSOCK || errno==EOPNOTSUPP) continue;
+   int e=errno ? errno : EIO;free(fds);return -e;
+  }
+  if(info.psi.soi_kind!=SOCKINFO_TCP || info.psi.soi_proto.pri_tcp.tcpsi_state!=TSI_S_LISTEN) continue;
+  int port=ntohs((uint16_t)info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
+  if(count>=capacity) {free(fds);return -EOVERFLOW;}
+  ports[count++]=port;
+ }
+ free(fds);return count;
+}

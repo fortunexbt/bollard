@@ -23,13 +23,13 @@ public enum Native {
     p.status = raw.status
     return p
   }
-  public static func snapshot() -> [Int32: Proc] {
+  public static func snapshot(includingOtherUsers: Bool = false) -> [Int32: Proc] {
     var ids = [Int32](repeating: 0, count: 32768)
     let count = dp_pids(&ids, Int32(ids.count))
     guard count > 0, count < ids.count else { return [:] }
     return Dictionary(
       uniqueKeysWithValues: ids.prefix(Int(count)).filter { $0 > 0 }.compactMap { pid in
-        guard let p = read(pid), p.uid == getuid() else { return nil }
+        guard let p = read(pid), includingOtherUsers || p.uid == getuid() else { return nil }
         return (pid, p)
       })
   }
@@ -62,6 +62,25 @@ public enum Native {
     }
     return String(decoding: data, as: UTF8.self)
   }
+  public static func nativeListeners(_ all: [Int32: Proc]) throws -> [Int32: [Int]] {
+    var candidates = Set<Int32>()
+    for p in all.values where Policy.kind(p, listening: true) != nil {
+      candidates.formUnion(Policy.descendants(p.pid, all).map(\.pid))
+    }
+    var result: [Int32: [Int]] = [:]
+    for pid in candidates {
+      var ports = [Int32](repeating: 0, count: 1024)
+      let count = dp_tcp_ports(pid, &ports, Int32(ports.count))
+      if count == -ESRCH || count == -ENOENT { continue }
+      guard count >= 0 else {
+        throw SafetyError(
+          "Socket inspection unavailable for PID \(pid): \(String(cString: strerror(-count)))")
+      }
+      guard let current = Native.read(pid), current.identity == all[pid]?.identity else { continue }
+      if count > 0 { result[pid] = Array(Set(ports.prefix(Int(count)).map(Int.init))).sorted() }
+    }
+    return result
+  }
   public static func listeners() throws -> [Int32: [Int]] {
     let text = try output(
       "/usr/sbin/lsof", ["-nP", "-a", "-u", String(getuid()), "-iTCP", "-sTCP:LISTEN", "-Fpn"])
@@ -83,16 +102,23 @@ public struct Scan: Sendable {
   public var count: Int
   public var duration: Double
   public var date: Date
+  public var usedSocketFallback: Bool = false
 }
 public final class Scanner {
   private var previous: [Int32: Proc] = [:]
   private var time = Date()
   private var orphans = Set<Identity>()
+  private var launcherCache = LaunchOwnershipCache()
   public init() {}
   public func scan() throws -> Scan {
     let begin = Date()
-    let ports = try Native.listeners()
     var all = Native.snapshot()
+    let ports: [Int32: [Int]]
+    var usedFallback = false
+    do { ports = try Native.nativeListeners(all) } catch {
+      ports = try Native.listeners()
+      usedFallback = true
+    }
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
     let elapsed = begin.timeIntervalSince(time)
     for (id, var p) in all {
@@ -109,23 +135,33 @@ public final class Scanner {
       }
     }
     orphans = orphans.intersection(Set(all.values.map(\.identity)))
-    var labels: [Int32: String] = [:]
-    if let output = try? Native.output("/bin/launchctl", ["list"]) {
-      for line in output.split(separator: "\n") {
-        let c = line.split(whereSeparator: { $0.isWhitespace })
-        if c.count >= 3, let pid = Int32(c[0]) { labels[pid] = String(c[2]) }
-      }
+    let oldLabels = launcherCache.current(in: all)
+    var workloads = Policy.workloads(all, ports: ports, labels: oldLabels, orphans: orphans)
+    // Promoted shell/npm roots, rather than only their listening children, own launch labels.
+    if let labels = try? launcherCache.update(
+      roots: workloads.map(\.root), processes: all,
+      lookup: {
+        let output = try Native.output("/bin/launchctl", ["list"])
+        var result: [Int32: String] = [:]
+        for line in output.split(separator: "\n") {
+          let c = line.split(whereSeparator: { $0.isWhitespace })
+          if c.count >= 3, let pid = Int32(c[0]) { result[pid] = String(c[2]) }
+        }
+        return result
+      }), labels != oldLabels
+    {
+      workloads = Policy.workloads(all, ports: ports, labels: labels, orphans: orphans)
     }
     previous = all
     time = begin
     return Scan(
-      workloads: Policy.workloads(all, ports: ports, labels: labels, orphans: orphans),
-      count: all.count, duration: Date().timeIntervalSince(begin), date: Date())
+      workloads: workloads, count: all.count, duration: Date().timeIntervalSince(begin),
+      date: Date(), usedSocketFallback: usedFallback)
   }
 }
 public enum Controller {
   public static func stop(_ w: Workload) throws {
-    let initial = Native.snapshot()
+    let initial = Native.snapshot(includingOtherUsers: true)
     try Policy.validate(w, live: initial)
     guard !w.members.contains(where: { initial[$0.pid]?.status == 4 }) else {
       throw SafetyError("A process is already suspended. Refusing to change its state.")
@@ -133,7 +169,7 @@ public enum Controller {
     if w.usesMinecraftController {
       // The audited controller sends Minecraft's console stop, waits for world save,
       // creates a backup, and cleans up its own caffeinate/tunnel children.
-      try Policy.validate(w, live: Native.snapshot())
+      try Policy.validate(w, live: Native.snapshot(includingOtherUsers: true))
       guard LocalControllers.isMinecraftController(w.root) else {
         throw SafetyError("Controller changed since discovery.")
       }
@@ -161,7 +197,7 @@ public enum Controller {
         })
       else { throw SafetyError("Could not order process tree.") }
       let p = pending.remove(at: index)
-      let live = Native.snapshot()
+      let live = Native.snapshot(includingOtherUsers: true)
       try Policy.validate(w, live: live)
       let ours = Set(frozen.map(\.identity))
       guard !w.members.contains(where: { !ours.contains($0.identity) && live[$0.pid]?.status == 4 })
@@ -172,7 +208,7 @@ public enum Controller {
       try Native.signal(p, SIGSTOP)
       frozen.append(p)
     }
-    try Policy.validate(w, live: Native.snapshot())
+    try Policy.validate(w, live: Native.snapshot(includingOtherUsers: true))
     for p in frozen { try Native.signal(p, SIGTERM) }
     for p in frozen { try? Native.signal(p, SIGCONT) }
     let deadline = Date().addingTimeInterval(5)
@@ -189,4 +225,11 @@ public enum Controller {
     throw SafetyError(
       "Termination requested, but some processes are still exiting. No force kill was sent.")
   }
+}
+
+/// Owns scan state on its own executor. Safety actions always take fresh uncached snapshots.
+public actor ProcessMonitor {
+  private let scanner = Scanner()
+  public init() {}
+  public func scan() throws -> Scan { try scanner.scan() }
 }

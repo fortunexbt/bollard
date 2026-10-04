@@ -22,7 +22,7 @@ public struct Proc: Sendable {
   public var status: UInt32 = 0
   public var pid: Int32 { identity.pid }
   public var command: String { args.map(shellQuote).joined(separator: " ") }
-  public var base: String { URL(fileURLWithPath: path).lastPathComponent.lowercased() }
+  public var base: String { path.split(separator: "/").last.map { $0.lowercased() } ?? "" }
   public init(
     pid: Int32, parent: Int32, start: UInt64 = 1, unique: UInt64? = nil, version: Int32 = 1,
     parentUnique: UInt64 = 0, uid: UInt32 = getuid(), path: String, cwd: String = "/tmp/project",

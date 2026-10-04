@@ -1,0 +1,9 @@
+{
+  "seconds": 60,
+  "cpu_ms": 16.608,
+  "cpu_percent": 0.02768,
+  "idle_wakeups": 14,
+  "interrupt_wakeups": 72,
+  "footprint_bytes": 28279696,
+  "resident_bytes": 97992704
+}

@@ -23,9 +23,11 @@ Read-only CLI:
 /Applications/DevPorts.app/Contents/MacOS/DevPorts --login-status
 ```
 
+The optimized native engine is documented in [the measured performance report](docs/performance/README.md). The More menu sorts by name, memory, CPU, or uptime.
+
 ## What the numbers mean
 
-Memory is resident memory summed across the displayed workload's process tree, not unique physical memory or GPU allocations. CPU is sampled process CPU time across that same tree; 100% means one core. The first scan has no CPU interval yet. Uptime belongs to the workload root. A transient scan failure retains the previous display but disables actions. TCP listeners are discovered with the system lsof; process identity, ancestry, cwd, argv, memory, and CPU come from native Darwin APIs.
+Memory is resident memory summed across the displayed workload's process tree, not unique physical memory or GPU allocations. CPU is sampled process CPU time across that same tree; 100% means one core. The first scan has no CPU interval yet. Uptime belongs to the workload root. A transient scan failure retains the previous display but disables actions. TCP listeners and process metadata come from native Darwin APIs. The system lsof is a compatibility fallback only. Launcher labels are cached by process generation. Kernel exit notifications refresh ended workloads without waiting for the polling interval.
 
 Minecraft clients, Gradle daemons, application helpers, coding agents, MCP servers, language servers, and notebook kernels are excluded. Background discovery is intentionally conservative. A detached PID is not automatically called an orphan: that label requires observing its original parent exit. Already-detached workloads with unknown ownership remain visible but read-only.
 

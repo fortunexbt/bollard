@@ -4,8 +4,6 @@ public enum Policy {
   static let shells: Set<String> = ["sh", "bash", "zsh", "fish", "dash"]
   public static func protected(_ p: Proc) -> Bool {
     let path = p.path.lowercased()
-    let tokens = p.args.map { $0.lowercased() }
-    let text = tokens.joined(separator: " ")
     if p.pid <= 1 || p.pid == getpid() || p.uid != getuid() || path.hasPrefix("/system/")
       || path.hasPrefix("/usr/libexec/") || path.hasPrefix("/usr/sbin/")
     {
@@ -17,6 +15,7 @@ public enum Policy {
     if path.contains(".app/") && !path.contains("/python.framework/") && !ollamaService {
       return true
     }
+    let text = p.args.joined(separator: " ").lowercased()
     if text.contains("org.prismlauncher.entrypoint") || text.contains("net.minecraft.client")
       || text.contains("knotclient")
     {
@@ -58,19 +57,27 @@ public enum Policy {
   }
   static func launchBoundary(_ p: Proc) -> Bool {
     if shells.contains(p.base) {
-      let command = p.args.dropFirst().joined(separator: " ")
-      if command.range(of: "\\b(while|until|for|repeat|trap)\\b", options: .regularExpression)
-        != nil
-      {
-        return false
+      if !p.args.contains(where: { $0.hasPrefix("-") && $0.contains("c") }) {
+        return p.args.dropFirst().allSatisfy { $0.hasPrefix("-") }
       }
-      // Shell scripts may be persistent supervisors. Interactive shells are boundaries.
-      if p.args.dropFirst().contains(where: { !$0.hasPrefix("-") })
-        && !p.args.contains(where: { $0.hasPrefix("-") && $0.contains("c") })
-      {
-        return false
+      guard p.args.count == 3, ["-c", "-lc"].contains(p.args[1]) else { return false }
+      let command = p.args[2]
+      guard !command.contains(where: { ";|\n`$<>(){}".contains($0) }) else { return false }
+      var commands = command.split(separator: "&", omittingEmptySubsequences: false).map {
+        $0.trimmingCharacters(in: .whitespaces)
       }
-      return true
+      if commands.last == "wait" { commands.removeLast() }
+      let launchers: Set<String> = [
+        "node", "python", "python3", "java", "npm", "pnpm", "yarn", "bun", "deno", "next", "vite",
+        "uvicorn",
+      ]
+      return !commands.isEmpty
+        && commands.allSatisfy { command in
+          guard let executable = command.split(whereSeparator: { $0.isWhitespace }).first else {
+            return false
+          }
+          return launchers.contains(String(executable.split(separator: "/").last ?? executable))
+        }
     }
     if ["codex", "claude", "aider", "hermes", "gemini", "opencode"].contains(p.base) {
       return true
@@ -220,8 +227,8 @@ public enum Policy {
         refusal = "A process is already suspended or being debugged."
       } else if all[root.parent] == nil && root.parent != 1 {
         refusal = "Parent identity could not be verified."
-      } else if root.cwd.isEmpty || root.args.isEmpty {
-        refusal = "Command or working directory could not be verified."
+      } else if members.contains(where: { $0.cwd.isEmpty || $0.args.isEmpty || $0.path.isEmpty }) {
+        refusal = "A process in this workload has unreadable command or directory metadata."
       } else if root.parent == 1 && !orphan && !LocalControllers.isMinecraftController(root) {
         refusal = "Launch ownership is unknown or managed. Stop it through its launcher."
       } else if let parent = all[root.parent], !launchBoundary(parent) {
@@ -267,7 +274,8 @@ public enum Policy {
       throw SafetyError("Parent process identity changed.")
     }
     for p in current {
-      guard !protected(p), let old = w.members.first(where: { $0.identity == p.identity }),
+      guard !protected(p), !p.args.isEmpty, !p.path.isEmpty, !p.cwd.isEmpty,
+        let old = w.members.first(where: { $0.identity == p.identity }),
         old.parent == p.parent, old.parentUnique == p.parentUnique, old.path == p.path,
         old.args == p.args, old.cwd == p.cwd
       else { throw SafetyError("Process identity, ownership, or command changed.") }

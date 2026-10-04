@@ -116,11 +116,88 @@ struct PolicyTests {
     precondition(row.root.pid == 11 && row.members.count == 3 && row.refusal == nil)
   }
 
+  func testForeignOwnerDescendantRefuses() throws {
+    let shell = p(10, 1, "/bin/zsh", ["zsh"])
+    let root = p(20, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
+    let all: [Int32: Proc] = [10: shell, 20: root]
+    let row = Policy.workloads(all, ports: [20: [3000]]).first!
+    var live = all
+    live[21] = Proc(pid: 21, parent: 20, uid: 0, path: "/usr/bin/sudo", args: ["sudo"])
+    do {
+      try Policy.validate(row, live: live)
+      fatalError("Foreign-owned descendant accepted")
+    } catch {}
+  }
+  func testLaunchLabelFollowsPromotedRoot() {
+    let npm = p(
+      11, 1, "/opt/homebrew/bin/node",
+      ["node", "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js", "run", "dev"])
+    let wrapper = p(12, 11, "/bin/sh", ["sh", "-c", "next dev"])
+    let server = p(
+      13, 12, "/opt/homebrew/bin/node",
+      ["node", "/tmp/project/node_modules/next/dist/bin/next", "dev"])
+    let rows = Policy.workloads(
+      [11: npm, 12: wrapper, 13: server], ports: [13: [3000]], labels: [11: "local.storefront"])
+    precondition(rows.count == 1 && rows[0].id == npm.identity && rows[0].root.parent == 1)
+    precondition(rows[0].provenance == "launchd · local.storefront" && !rows[0].orphan)
+  }
+  func testLaunchOwnershipTransitions() throws {
+    var cache = LaunchOwnershipCache()
+    var calls = 0
+    let original = p(10, 1, "/usr/bin/node", ["node", "server.js"])
+    let first = cache.update(roots: [original], processes: [10: original]) {
+      calls += 1
+      return [10: "first"]
+    }
+    precondition(first[10] == "first" && calls == 1)
+    _ = cache.update(roots: [original], processes: [10: original]) {
+      fatalError("Unchanged generation fetched again")
+    }
+    let reused = Proc(
+      pid: 10, parent: 1, start: 2, unique: 11, path: original.path, args: original.args)
+    precondition(cache.current(in: [10: reused]).isEmpty)
+    let second = cache.update(roots: [reused], processes: [10: reused]) {
+      calls += 1
+      return [10: "second"]
+    }
+    precondition(second[10] == "second" && calls == 2)
+    let fresh = p(12, 1, "/usr/bin/node", ["node", "server.js"])
+    do {
+      _ = try cache.update(roots: [fresh], processes: [12: fresh]) {
+        calls += 1
+        throw SafetyError("lookup failed")
+      }
+      fatalError("Failure swallowed")
+    } catch {}
+    let retry = cache.update(roots: [fresh], processes: [12: fresh]) {
+      calls += 1
+      return [12: "retry"]
+    }
+    precondition(retry[12] == "retry" && calls == 4)
+    let departed = cache.update(roots: [], processes: [:]) { fatalError("Empty roots fetched") }
+    precondition(departed.isEmpty)
+  }
+  func testUnreadableDescendantRefuses() {
+    let shell = p(10, 1, "/bin/zsh", ["zsh"])
+    let root = p(20, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
+    let unreadable = p(21, 20, "/opt/homebrew/bin/python3", [])
+    let row = Policy.workloads([10: shell, 20: root, 21: unreadable], ports: [20: [3000]]).first!
+    precondition(row.refusal != nil)
+  }
   func testShellSupervisorRefuses() {
     let supervisor = p(10, 1, "/bin/zsh", ["zsh", "-c", "while true; do node server.js; done"])
     let child = p(11, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
     precondition(
       Policy.workloads([10: supervisor, 11: child], ports: [11: [3000]]).first?.refusal != nil)
+    let opaque = p(10, 1, "/bin/zsh", ["zsh", "-c", "run_forever"])
+    precondition(
+      Policy.workloads([10: opaque, 11: child], ports: [11: [3000]]).first?.refusal != nil)
+    let siblings = p(
+      10, 1, "/bin/zsh",
+      ["zsh", "-c", "/opt/homebrew/bin/node server.js & /opt/homebrew/bin/node other.js & wait"])
+    precondition(
+      Policy.workloads([10: siblings, 11: child], ports: [11: [3000]]).first?.refusal == nil)
+
   }
   func testPanelWithinEveryScreen() {
     for screen in [
@@ -153,8 +230,16 @@ struct PolicyTests {
     t.testDedicatedWrapperBoundary()
     t.testPanelWithinEveryScreen()
     t.testAppSupervisorAndNodePackageManager()
+    t.testUnreadableDescendantRefuses()
+    t.testLaunchLabelFollowsPromotedRoot()
+    try t.testLaunchOwnershipTransitions()
     t.testShellSupervisorRefuses()
-    print("12 policy checks passed")
-    if !CommandLine.arguments.contains("--policy-only") { try liveChecks() }
+    try t.testForeignOwnerDescendantRefuses()
+    print("16 policy checks passed")
+    if CommandLine.arguments.contains("--socket-parity") {
+      try socketParityChecks()
+    } else if !CommandLine.arguments.contains("--policy-only") {
+      try liveChecks()
+    }
   }
 }

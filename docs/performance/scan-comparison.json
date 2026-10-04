@@ -1,0 +1,177 @@
+{
+  "runs": [
+    {
+      "kind": "before",
+      "sha256": "3ed30ecb9f9ef58de8369e79d8e31c137ad9b5aceaad93c5948b998654c165a4",
+      "result": {
+        "launchctl_ms": {
+          "max": 73.934959,
+          "median": 72.201125,
+          "min": 66.760625,
+          "p95": 73.934959
+        },
+        "lsof_ms": {
+          "max": 101.888292,
+          "median": 98.095291,
+          "min": 93.372125,
+          "p95": 101.888292
+        },
+        "policy_ms": {
+          "max": 7.053125,
+          "median": 6.55775,
+          "min": 6.120291,
+          "p95": 7.053125
+        },
+        "process_count": 408,
+        "samples": 15,
+        "scan_ms": {
+          "max": 200.327917,
+          "median": 185.960458,
+          "min": 178.949291,
+          "p95": 200.327917
+        },
+        "snapshot_ms": {
+          "max": 14.179208,
+          "median": 8.895625,
+          "min": 7.165792,
+          "p95": 14.179208
+        },
+        "timestamp": "2026-10-04T00:17:48Z",
+        "workloads": 2
+      }
+    },
+    {
+      "kind": "after",
+      "sha256": "6d2f6567546a564decf93e56022113c5f8a689c410d2c1a1d33d0a7d6ee4957e",
+      "result": {
+        "fallback_scans": 0,
+        "launchctl_ms": {
+          "max": 73.15025,
+          "median": 71.735875,
+          "min": 66.858625,
+          "p95": 73.15025
+        },
+        "lsof_ms": {
+          "max": 110.757,
+          "median": 97.223875,
+          "min": 95.496,
+          "p95": 110.757
+        },
+        "policy_ms": {
+          "max": 7.320291,
+          "median": 5.273917,
+          "min": 5.122416,
+          "p95": 7.320291
+        },
+        "process_count": 408,
+        "samples": 15,
+        "scan_ms": {
+          "max": 95.431458,
+          "median": 17.607083,
+          "min": 15.54075,
+          "p95": 95.431458
+        },
+        "snapshot_ms": {
+          "max": 9.227334,
+          "median": 7.316417,
+          "min": 6.443834,
+          "p95": 9.227334
+        },
+        "timestamp": "2026-10-04T00:17:51Z",
+        "workloads": 2
+      }
+    },
+    {
+      "kind": "before",
+      "sha256": "3ed30ecb9f9ef58de8369e79d8e31c137ad9b5aceaad93c5948b998654c165a4",
+      "result": {
+        "launchctl_ms": {
+          "max": 73.261708,
+          "median": 72.439291,
+          "min": 70.407917,
+          "p95": 73.261708
+        },
+        "lsof_ms": {
+          "max": 97.673959,
+          "median": 96.878208,
+          "min": 94.226417,
+          "p95": 97.673959
+        },
+        "policy_ms": {
+          "max": 6.762,
+          "median": 6.043625,
+          "min": 5.864375,
+          "p95": 6.762
+        },
+        "process_count": 409,
+        "samples": 15,
+        "scan_ms": {
+          "max": 186.96425,
+          "median": 181.766791,
+          "min": 179.772708,
+          "p95": 186.96425
+        },
+        "snapshot_ms": {
+          "max": 7.529792,
+          "median": 6.715334,
+          "min": 5.538417,
+          "p95": 7.529792
+        },
+        "timestamp": "2026-10-04T00:17:57Z",
+        "workloads": 2
+      }
+    },
+    {
+      "kind": "after",
+      "sha256": "6d2f6567546a564decf93e56022113c5f8a689c410d2c1a1d33d0a7d6ee4957e",
+      "result": {
+        "fallback_scans": 0,
+        "launchctl_ms": {
+          "max": 74.276584,
+          "median": 72.139666,
+          "min": 67.940459,
+          "p95": 74.276584
+        },
+        "lsof_ms": {
+          "max": 98.859416,
+          "median": 96.257125,
+          "min": 94.592875,
+          "p95": 98.859416
+        },
+        "policy_ms": {
+          "max": 5.637667,
+          "median": 5.293917,
+          "min": 5.120375,
+          "p95": 5.637667
+        },
+        "process_count": 411,
+        "samples": 15,
+        "scan_ms": {
+          "max": 91.526916,
+          "median": 17.219084,
+          "min": 15.606417,
+          "p95": 91.526916
+        },
+        "snapshot_ms": {
+          "max": 8.020667,
+          "median": 7.139875,
+          "min": 5.446833,
+          "p95": 8.020667
+        },
+        "timestamp": "2026-10-04T00:18:00Z",
+        "workloads": 2
+      }
+    }
+  ],
+  "summary": {
+    "before": 183.86362450000001,
+    "after": 17.4130835,
+    "improvement_percent": 90.52934828879108,
+    "workload_counts": [
+      2,
+      2,
+      2,
+      2
+    ]
+  }
+}

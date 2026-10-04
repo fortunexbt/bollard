@@ -5,3 +5,5 @@ int dp_pids(int32_t *buffer, int count);
 int dp_read(int32_t pid, DPProcess *out);
 int dp_args(int32_t pid, char *buffer, int capacity);
 int dp_signal(DPProcess expected, int signal);
+// Returns port count, or a negative errno. Does not connect to sockets.
+int dp_tcp_ports(int32_t pid, int32_t *ports, int capacity);
