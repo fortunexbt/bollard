@@ -88,9 +88,11 @@ public func uptimeText(_ n: TimeInterval) -> String {
 }
 
 public enum PanelPlacement {
-  public static func frame(anchor: CGRect, screen: CGRect, desiredHeight: Double) -> CGRect {
+  public static func frame(
+    anchor: CGRect, screen: CGRect, desiredHeight: Double, desiredWidth: Double = 480
+  ) -> CGRect {
     let safe = screen.insetBy(dx: 8, dy: 8)
-    let width = min(480.0, safe.width)
+    let width = min(desiredWidth, safe.width)
     let height = min(desiredHeight, safe.height, 680)
     let x = max(safe.minX, min(anchor.maxX - width, safe.maxX - width))
     let y = max(safe.minY, min(anchor.minY - height - 6, safe.maxY - height))

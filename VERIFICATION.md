@@ -22,3 +22,9 @@ No production server shutdown, Minecraft world-save/backup cycle, or reboot was 
 - Final review: seven independent lenses completed against the performance changes with no outstanding actionable findings. Receipt: `/tmp/compound-engineering-501/ce-code-review/20261004-013544-5f9d5ca7`.
 - Final installed 1.1.0 UI inspected visually: compact panel, correct ellipsis, two real services, current metrics. Signing verification passes.
 - Remaining coverage limits: no deterministic AppKit exit-observer/coalescing lifecycle test; native socket race/error branches lack targeted fault injection; benchmark measures total scan cost rather than isolating native socket cost. No long-duration energy/leak soak was performed.
+
+## Quiet-state follow-up — 1.1.1
+
+- Installed and visually verified a 320 × 106 point quiet panel on the actual empty workload scan. Accessibility tree contains no scroll area, search, zero counters, empty Background section, or diagnostics footer.
+- Quiet hidden discovery now runs every 120 seconds with 20 seconds timer tolerance (previously 30 seconds); opening the menu always requests an immediate scan. Quiet visible polling is 5 seconds; active workloads retain 3 seconds visible / 30 seconds hidden. Interval changes replace the timer only when necessary. New workloads may take up to the quiet polling interval plus timer tolerance to appear in the closed-menu badge.
+- Native release build and all 16 policy checks pass. App signing verifies and login registration reports enabled. No workload was signalled.

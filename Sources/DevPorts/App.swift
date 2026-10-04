@@ -30,6 +30,8 @@ enum WorkloadSort: String, CaseIterable {
   @Published var confirmation: Workload?
   @Published var acting: Identity?
   @Published var messages: [Identity: String] = [:]
+  var isQuiet: Bool { scan?.workloads.isEmpty == true && error == nil }
+  var compact: Bool { isQuiet && notice == nil && acting == nil }
   var visible = false
   private var refreshPending = false
   private let monitor = ProcessMonitor()
@@ -150,8 +152,10 @@ struct Panel: View {
         ).foregroundStyle(accent)
         Text("DevPorts").font(.system(size: 14, weight: .semibold))
         Spacer()
-        Circle().fill(store.error == nil ? Color.green : Color.orange).frame(width: 6, height: 6)
-        Text(store.busy ? "Scanning" : "Live").font(.system(size: 11)).foregroundStyle(.secondary)
+        if !store.compact {
+          Circle().fill(store.error == nil ? Color.green : Color.orange).frame(width: 6, height: 6)
+          Text(store.busy ? "Scanning" : "Live").font(.system(size: 11)).foregroundStyle(.secondary)
+        }
         Button {
           store.refresh()
         } label: {
@@ -181,107 +185,125 @@ struct Panel: View {
           Image(systemName: "ellipsis").font(.system(size: 15, weight: .medium))
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 20)
       }.padding(.horizontal, 14).padding(.top, 11).padding(.bottom, 9)
-      HStack(spacing: 7) {
-        Text("\(store.scan?.workloads.filter { !$0.ports.isEmpty }.count ?? 0) servers")
-        Text("·")
-        Text(memoryText(store.scan?.workloads.reduce(0) { $0 + $1.memory } ?? 0))
-        Text("·")
-        Text(String(format: "%.1f%% CPU", store.scan?.workloads.reduce(0) { $0 + $1.cpu } ?? 0))
-        Spacer()
-      }.font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary).padding(
-        .horizontal, 14
-      ).padding(.bottom, 7)
-      HStack {
-        Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
-        TextField("Find a server, project, or port", text: $store.search).textFieldStyle(.plain)
-          .font(.system(size: 12))
-        if !store.search.isEmpty {
-          Button {
-            store.search = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-          }.buttonStyle(.plain)
-        }
-      }.padding(7).background(.primary.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 9))
-        .padding(.horizontal, 10).padding(.bottom, 9)
-      if let error = store.error {
-        Label(error, systemImage: "exclamationmark.triangle").font(.system(size: 11))
-          .foregroundStyle(.orange).padding(.horizontal, 20).padding(.bottom, 10)
-      }
-      if let notice = store.notice {
-        HStack {
-          Text(notice).font(.system(size: 11)).lineLimit(3)
-          Spacer()
-          Button {
-            store.notice = nil
-          } label: {
-            Image(systemName: "xmark")
-          }.buttonStyle(.plain)
-        }.padding(.horizontal, 14).padding(.bottom, 7)
-      }
-      ScrollView {
-        VStack(spacing: 5) {
-          HStack {
-            Text("SERVERS").tracking(1.3)
-            Spacer()
-            Text("MEMORY").frame(width: 58, alignment: .trailing)
-            Text("CPU").frame(width: 32, alignment: .trailing)
-            Text("UPTIME").frame(width: 50, alignment: .trailing)
-          }.font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).padding(
-            .horizontal, 14
-          ).padding(.bottom, 5)
-          ForEach(servers) { row($0) }
-          if servers.isEmpty {
-            VStack(spacing: 9) {
-              Image(systemName: store.search.isEmpty ? "checkmark.circle" : "magnifyingglass").font(
-                .system(size: 28, weight: .ultraLight)
-              ).foregroundStyle(accent)
-              Text(store.search.isEmpty ? "A quiet Mac." : "No matching servers").font(
-                .system(size: 15, weight: .medium))
-              Text(
-                store.search.isEmpty
-                  ? "Servers appear here when you start them.\nSystem services and app internals stay out of the way."
-                  : "Try a project name, framework, or port."
-              ).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }.frame(maxWidth: .infinity).padding(.vertical, 28)
+      if store.compact {
+        HStack(spacing: 9) {
+          Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
+          VStack(alignment: .leading, spacing: 3) {
+            Text("All quiet").font(.system(size: 13, weight: .medium))
+            Text("No servers or background workloads.").font(.system(size: 11))
+              .foregroundStyle(.secondary)
           }
-          Divider().padding(.vertical, 5)
-          Button {
-            withAnimation(.easeInOut(duration: 0.16)) { store.background.toggle() }
-          } label: {
-            HStack(spacing: 7) {
-              Image(systemName: store.background ? "chevron.down" : "chevron.right").font(
-                .system(size: 9, weight: .bold))
-              Text("Background").font(.system(size: 12, weight: .medium))
-              Text("\(workers.count)").font(.system(size: 10, design: .monospaced)).foregroundStyle(
-                .secondary)
+          Spacer()
+        }.padding(.horizontal, 14).padding(.top, 3)
+        Spacer(minLength: 10)
+      } else {
+        HStack(spacing: 7) {
+          Text("\(store.scan?.workloads.filter { !$0.ports.isEmpty }.count ?? 0) servers")
+          Text("·")
+          Text(memoryText(store.scan?.workloads.reduce(0) { $0 + $1.memory } ?? 0))
+          Text("·")
+          Text(String(format: "%.1f%% CPU", store.scan?.workloads.reduce(0) { $0 + $1.cpu } ?? 0))
+          Spacer()
+        }.font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary).padding(
+          .horizontal, 14
+        ).padding(.bottom, 7)
+        HStack {
+          Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
+          TextField("Find a server, project, or port", text: $store.search).textFieldStyle(.plain)
+            .font(.system(size: 12))
+          if !store.search.isEmpty {
+            Button {
+              store.search = ""
+            } label: {
+              Image(systemName: "xmark.circle.fill")
+            }.buttonStyle(.plain)
+          }
+        }.padding(7).background(.primary.opacity(0.035)).clipShape(
+          RoundedRectangle(cornerRadius: 9)
+        )
+        .padding(.horizontal, 10).padding(.bottom, 9)
+        if let error = store.error {
+          Label(error, systemImage: "exclamationmark.triangle").font(.system(size: 11))
+            .foregroundStyle(.orange).padding(.horizontal, 20).padding(.bottom, 10)
+        }
+        if let notice = store.notice {
+          HStack {
+            Text(notice).font(.system(size: 11)).lineLimit(3)
+            Spacer()
+            Button {
+              store.notice = nil
+            } label: {
+              Image(systemName: "xmark")
+            }.buttonStyle(.plain)
+          }.padding(.horizontal, 14).padding(.bottom, 7)
+        }
+        ScrollView {
+          VStack(spacing: 5) {
+            HStack {
+              Text("SERVERS").tracking(1.3)
               Spacer()
-              if workers.contains(where: { $0.orphan }) {
-                Label("Orphaned", systemImage: "exclamationmark.circle.fill").font(
-                  .system(size: 10)
-                ).foregroundStyle(.orange)
+              Text("MEMORY").frame(width: 58, alignment: .trailing)
+              Text("CPU").frame(width: 32, alignment: .trailing)
+              Text("UPTIME").frame(width: 50, alignment: .trailing)
+            }.font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).padding(
+              .horizontal, 14
+            ).padding(.bottom, 5)
+            ForEach(servers) { row($0) }
+            if servers.isEmpty {
+              VStack(spacing: 9) {
+                Image(systemName: store.search.isEmpty ? "checkmark.circle" : "magnifyingglass")
+                  .font(
+                    .system(size: 28, weight: .ultraLight)
+                  ).foregroundStyle(accent)
+                Text(store.search.isEmpty ? "A quiet Mac." : "No matching servers").font(
+                  .system(size: 15, weight: .medium))
+                Text(
+                  store.search.isEmpty
+                    ? "Servers appear here when you start them.\nSystem services and app internals stay out of the way."
+                    : "Try a project name, framework, or port."
+                ).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(
+                  .center)
+              }.frame(maxWidth: .infinity).padding(.vertical, 28)
+            }
+            Divider().padding(.vertical, 5)
+            Button {
+              withAnimation(.easeInOut(duration: 0.16)) { store.background.toggle() }
+            } label: {
+              HStack(spacing: 7) {
+                Image(systemName: store.background ? "chevron.down" : "chevron.right").font(
+                  .system(size: 9, weight: .bold))
+                Text("Background").font(.system(size: 12, weight: .medium))
+                Text("\(workers.count)").font(.system(size: 10, design: .monospaced))
+                  .foregroundStyle(
+                    .secondary)
+                Spacer()
+                if workers.contains(where: { $0.orphan }) {
+                  Label("Orphaned", systemImage: "exclamationmark.circle.fill").font(
+                    .system(size: 10)
+                  ).foregroundStyle(.orange)
+                }
+              }
+            }.buttonStyle(.plain).padding(.horizontal, 14).padding(.bottom, 6)
+            if store.background || !store.search.isEmpty {
+              ForEach(workers) { row($0) }
+              if workers.isEmpty {
+                Text("No meaningful background workloads").font(.system(size: 11))
+                  .foregroundStyle(.tertiary).padding(12)
               }
             }
-          }.buttonStyle(.plain).padding(.horizontal, 14).padding(.bottom, 6)
-          if store.background || !store.search.isEmpty {
-            ForEach(workers) { row($0) }
-            if workers.isEmpty {
-              Text("No meaningful background workloads").font(.system(size: 11))
-                .foregroundStyle(.tertiary).padding(12)
-            }
-          }
-        }.padding(.horizontal, 9).padding(.bottom, 8)
-      }.defaultScrollAnchor(.top).scrollIndicators(.never).frame(maxHeight: .infinity)
-      Divider()
-      HStack {
-        Text(
-          store.scan.map { "\($0.count) processes checked · \(Int($0.duration*1000)) ms" }
-            ?? "Reading your Mac…")
-        Spacer()
-        Text("Local only")
-        Image(systemName: "lock.shield")
-      }.font(.system(size: 10)).foregroundStyle(.tertiary).padding(.horizontal, 20).padding(
-        .vertical, 8)
+          }.padding(.horizontal, 9).padding(.bottom, 8)
+        }.defaultScrollAnchor(.top).scrollIndicators(.never).frame(maxHeight: .infinity)
+        Divider()
+        HStack {
+          Text(
+            store.scan.map { "\($0.count) processes checked · \(Int($0.duration*1000)) ms" }
+              ?? "Reading your Mac…")
+          Spacer()
+          Text("Local only")
+          Image(systemName: "lock.shield")
+        }.font(.system(size: 10)).foregroundStyle(.tertiary).padding(.horizontal, 20).padding(
+          .vertical, 8)
+      }
     }.frame(maxWidth: .infinity, maxHeight: .infinity).background(
       Color(nsColor: .windowBackgroundColor))
   }
@@ -457,6 +479,7 @@ final class MenuPanel: NSPanel {
     defer: false)
   var item: NSStatusItem!
   var timer: Timer?
+  var refreshInterval: TimeInterval?
   var observation: AnyCancellable?
   var outsideMonitor: Any?
   var keyMonitor: Any?
@@ -516,6 +539,7 @@ final class MenuPanel: NSPanel {
     }
   }
   func updatePanel() {
+    scheduleRefresh()
     let count = store.scan?.workloads.filter { !$0.ports.isEmpty }.count ?? 0
     let title = count > 0 ? " \(count)" : ""
     if item.button?.title != title { item.button?.title = title }
@@ -530,7 +554,8 @@ final class MenuPanel: NSPanel {
       186.0 + Double(max(servers, 1) + background) * 54 + (store.selected == nil ? 0 : 240)
       + (store.pending == nil ? 0 : 110) + (store.showTree ? 100 : 0)
     let frame = PanelPlacement.frame(
-      anchor: anchor, screen: screen.visibleFrame, desiredHeight: desired)
+      anchor: anchor, screen: screen.visibleFrame,
+      desiredHeight: store.compact ? 106 : desired, desiredWidth: store.compact ? 320 : 480)
     if panel.frame != frame { panel.setFrame(frame, display: true) }
 
   }
@@ -548,12 +573,17 @@ final class MenuPanel: NSPanel {
     }
   }
   func scheduleRefresh() {
+    // Quiet Macs need discovery, not resource sampling. Opening the menu always scans immediately.
+    let interval: TimeInterval =
+      store.visible ? (store.isQuiet ? 5 : 3) : (store.isQuiet ? 120 : 30)
+    guard refreshInterval != interval else { return }
+    refreshInterval = interval
     timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: store.visible ? 3 : 30, repeats: true) {
+    timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) {
       [weak self] _ in
       Task { @MainActor in self?.store.refresh() }
     }
-    timer?.tolerance = store.visible ? 1 : 5
+    timer?.tolerance = store.visible ? 1 : (store.isQuiet ? 20 : 5)
   }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard store.acting == nil else {
