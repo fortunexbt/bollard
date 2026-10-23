@@ -13,7 +13,7 @@ app="$PWD/build/Bollard.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create .build/arm64-apple-macosx/release/Bollard .build/x86_64-apple-macosx/release/Bollard -output "$app/Contents/MacOS/Bollard"
-cp Resources/Bollard.icns "$app/Contents/Resources/Bollard.icns"
+cp Resources/Bollard.icns Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

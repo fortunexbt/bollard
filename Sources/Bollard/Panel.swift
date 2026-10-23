@@ -81,9 +81,10 @@ struct Panel: View {
   }
   var header: some View {
     HStack(spacing: 10) {
-      Image(systemName: "point.3.connected.trianglepath.dotted").font(
-        .system(size: 17, weight: .medium)
-      ).foregroundStyle(accent)
+      if let glyph = AppDelegate.menuBarIcon {
+        Image(nsImage: glyph).renderingMode(.template).resizable().frame(width: 20, height: 20)
+          .foregroundStyle(accent).accessibilityHidden(true)
+      }
       Text("Bollard").font(.system(size: 14, weight: .semibold))
       Spacer()
       if !store.compact {
@@ -329,7 +330,7 @@ struct RecentRow: View {
       VStack(alignment: .leading, spacing: 3) {
         Text(r.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
         Text(
-          "\(r.kind)\(r.ports.isEmpty ? "" : " · " + r.ports.map { ":\($0)" }.joined(separator: " ")) · \(r.origin) · \(uptimeText(Date().timeIntervalSince(r.lastSeen))) ago"
+          "\(r.kind)\(r.ports.isEmpty ? "" : " · " + r.ports.map { ":\(String($0))" }.joined(separator: " ")) · \(r.origin) · \(uptimeText(Date().timeIntervalSince(r.lastSeen))) ago"
         )
         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
       }

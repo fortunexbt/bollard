@@ -20,7 +20,7 @@ struct WorkloadMenu: View {
       Divider()
     }
     ForEach(w.ports, id: \.self) { port in
-      Button("Open localhost:\(port)") { store.open(port: port) }
+      Button("Open localhost:\(String(port))") { store.open(port: port) }
     }
     if !w.root.cwd.isEmpty {
       Menu("Open project in") {
@@ -103,7 +103,7 @@ struct Detail: View {
         HStack(spacing: 6) {
           Image(systemName: l.wildcard ? "antenna.radiowaves.left.and.right" : "lock")
             .foregroundStyle(l.wildcard ? .orange : .secondary)
-          Text("\(l.address):\(l.port)").font(.system(size: 10, design: .monospaced))
+          Text("\(l.address):\(String(l.port))").font(.system(size: 10, design: .monospaced))
           Text(l.wildcard ? "reachable from your network" : "local only").foregroundStyle(
             .secondary)
           if l.pid != w.root.pid { Text("· PID \(l.pid)").foregroundStyle(.tertiary) }
@@ -163,7 +163,9 @@ struct Detail: View {
     HStack(spacing: 8) {
       if !w.ports.isEmpty, w.kind.web {
         Menu("Open") {
-          ForEach(w.ports, id: \.self) { port in Button(":\(port)") { store.open(port: port) } }
+          ForEach(w.ports, id: \.self) { port in
+            Button(":\(String(port))") { store.open(port: port) }
+          }
         }.frame(width: 65)
       }
       if !w.root.cwd.isEmpty {

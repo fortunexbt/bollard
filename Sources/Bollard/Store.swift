@@ -81,7 +81,7 @@ enum WorkloadSort: String, CaseIterable {
     (scan?.workloads ?? []).filter { w in
       (filter == nil || w.origin == filter)
         && (search.isEmpty
-          || "\(name(w)) \(w.name) \(w.kind.name) \(w.ports.map { ":\($0)" }.joined(separator: " ")) \(w.provenance) \(w.origin) \(w.branch ?? "") \(w.root.pid)"
+          || "\(name(w)) \(w.name) \(w.kind.name) \(w.ports.map { ":\(String($0))" }.joined(separator: " ")) \(w.provenance) \(w.origin) \(w.branch ?? "") \(w.root.pid)"
             .localizedCaseInsensitiveContains(search))
     }.sorted { a, b in
       let pa = pinned(a)
@@ -100,7 +100,9 @@ enum WorkloadSort: String, CaseIterable {
   var servers: [Workload] { lane(.servers) }
   var recent: [RecentServer] {
     let live = Set((scan?.workloads ?? []).map(History.key))
-    return history.recent.filter { !live.contains($0.id) }
+    return history.recent.filter {
+      !live.contains($0.id) && FileManager.default.fileExists(atPath: $0.directory)
+    }
   }
   /// Launchers present among dev workloads, with counts, for the filter pills.
   var origins: [(name: String, count: Int)] {
@@ -161,7 +163,7 @@ enum WorkloadSort: String, CaseIterable {
         notifier.post(
           title: "\(name(w)) stopped",
           body:
-            "\(w.kind.name) on \(w.ports.map { ":\($0)" }.joined(separator: " ")) exited. Started by \(w.origin).",
+            "\(w.kind.name) on \(w.ports.map { ":\(String($0))" }.joined(separator: " ")) exited. Started by \(w.origin).",
           id: "stop-\(id.pid)-\(id.start)")
       }
     }
@@ -170,7 +172,7 @@ enum WorkloadSort: String, CaseIterable {
         notifier.post(
           title: "\(name(w)) is up",
           body:
-            "\(w.kind.name) on \(w.ports.map { ":\($0)" }.joined(separator: " ")) · \(w.origin)",
+            "\(w.kind.name) on \(w.ports.map { ":\(String($0))" }.joined(separator: " ")) · \(w.origin)",
           id: "start-\(w.id.pid)-\(w.id.start)")
       }
     }

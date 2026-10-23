@@ -7,7 +7,7 @@ struct Sparkline: View {
   var body: some View {
     Canvas { context, size in
       guard samples.count > 1 else { return }
-      let top = max(100, samples.max() ?? 0)
+      let top = max(25, samples.max() ?? 0)
       var path = Path()
       for (i, v) in samples.enumerated() {
         let x = size.width * Double(i) / Double(samples.count - 1)
@@ -40,10 +40,14 @@ struct Row: View {
   var acting: Bool
   @State private var hovering = false
   var armed: Signal? { store.armed.flatMap { $0.id == w.id ? $0.signal : nil } }
+  var peak: Double { w.history.map(\.cpu).max() ?? 0 }
   var subtitle: String {
     var parts = [w.kind.name]
     if let branch = w.branch { parts.append(branch) }
-    if w.section == .servers || w.section == .background { parts.append(w.origin) }
+    if w.section == .servers || w.section == .background, !["Detached", "Other"].contains(w.origin)
+    {
+      parts.append(w.origin)
+    }
     return parts.joined(separator: " · ")
   }
   var body: some View {
@@ -92,8 +96,8 @@ struct Row: View {
           "\(store.name(w)), \(w.kind.name)\(w.ports.map { ", port \($0)" }.joined())")
       if !w.ports.isEmpty {
         HStack(spacing: 3) {
-          ForEach(w.ports.prefix(3), id: \.self) { port in
-            Button(":\(port)") {
+          ForEach(w.ports.prefix(2), id: \.self) { port in
+            Button(":\(String(port))") {
               if w.kind.web { store.open(port: port) } else { store.copy("\(port)") }
             }
             .buttonStyle(.plain).font(.system(size: 10, weight: .medium, design: .monospaced))
@@ -103,8 +107,9 @@ struct Row: View {
             .help(w.kind.web ? "Open http://localhost:\(port)" : "Copy \(port)").accessibilityLabel(
               "Port \(port)")
           }
-          if w.ports.count > 3 {
-            Text("+\(w.ports.count - 3)").font(.system(size: 9)).foregroundStyle(.tertiary)
+          if w.ports.count > 2 {
+            Text("+\(w.ports.count - 2)").font(.system(size: 9)).foregroundStyle(.tertiary)
+              .help(w.ports.dropFirst(2).map { ":\(String($0))" }.joined(separator: " "))
           }
         }
       }
@@ -112,9 +117,17 @@ struct Row: View {
         actionButton
       } else {
         Sparkline(samples: w.history.map(\.cpu), color: accent).frame(width: 40, height: 14)
-          .opacity(w.history.contains { $0.cpu >= 0.5 } ? 1 : 0)
-        Text(String(format: "%.0f%%", w.cpu)).frame(width: 32, alignment: .trailing)
-        Text(memoryText(w.memory)).foregroundStyle(w.memory >= 2_000_000_000 ? .orange : .primary)
+          .opacity(peak >= 2 ? 1 : 0)
+          .help(String(format: "CPU over the last %d scans · peak %.0f%%", w.history.count, peak))
+          .accessibilityLabel(String(format: "CPU peak %.0f%%", peak))
+        Text(w.members.isEmpty ? "–" : String(format: "%.0f%%", w.cpu))
+          .foregroundStyle(w.members.isEmpty ? Color.secondary : Color.primary).frame(
+            width: 32, alignment: .trailing)
+        Text(w.members.isEmpty ? "–" : memoryText(w.memory))
+          .foregroundStyle(
+            w.memory >= 2_000_000_000
+              ? Color.orange : w.members.isEmpty ? Color.secondary : Color.primary
+          )
           .frame(width: 58, alignment: .trailing)
         Text(uptimeText(w.uptime)).foregroundStyle(.secondary).frame(
           width: 46, alignment: .trailing)

@@ -2,6 +2,24 @@
 
 Every server on your Mac, in the menu bar, with a Stop button that works.
 
+![Bollard panel](docs/screenshot.png)
+
+## Install
+
+```sh
+brew install --cask fortunexbt/tap/bollard
+```
+
+Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications. The build is signed but not notarized, so the first launch needs a right-click → Open, or:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Bollard.app
+```
+
+Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 14 or later; the binary is universal.
+
+To build from source: `./scripts/build.sh && ./scripts/install.sh` with the Xcode command-line tools.
+
 Bollard is a native macOS menu bar app for people who run a lot of local servers, often started by coding agents they are not watching. It shows every TCP listener on the machine, names each one by project and git branch, says which agent or tool started it, and stops it with one click, a shortcut, a command, or a tool call from the agent itself. SwiftUI + AppKit, a small C bridge over Darwin's kernel tables, no runtime dependencies, no telemetry, no network requests, no privileged helper.
 
 ## What you see
@@ -74,7 +92,7 @@ Two kernel calls per scan: `KERN_PROC_ALL` for the process table and `net.inet.t
 
 The panel polls every 2 s while open and every 30 s while closed. Steady-state scans take about 10 ms on a loaded machine; see `docs/performance/`.
 
-## Build
+## Build from source
 
 ```sh
 ./scripts/build.sh      # universal (arm64 + x86_64), hardened runtime, build/Bollard.app
@@ -82,7 +100,7 @@ The panel polls every 2 s while open and every 30 s while closed. Steady-state s
 ./scripts/dmg.sh        # build/Bollard-<version>.dmg
 ```
 
-Ad-hoc signed by default. Set `SIGN_IDENTITY` to a Developer ID certificate and `NOTARY_PROFILE` to a notarytool keychain profile to sign and notarize for distribution.
+Ad-hoc signed by default. Set `SIGN_IDENTITY` to a Developer ID certificate and `NOTARY_PROFILE` to a notarytool keychain profile to sign and notarize for distribution. `./scripts/dmg.sh` packages the app.
 
 Checks:
 

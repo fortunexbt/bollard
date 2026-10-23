@@ -3,6 +3,7 @@ import BollardCore
 import Combine
 import ServiceManagement
 import SwiftUI
+import os
 
 final class MenuPanel: NSPanel {
   override var canBecomeKey: Bool { true }
@@ -20,16 +21,15 @@ final class MenuPanel: NSPanel {
   var observation: AnyCancellable?
   var outsideMonitor: Any?
   var keyMonitor: Any?
-  var activationObserver: NSObjectProtocol?
   var exposedTitle = false
+  var spaceObserver: NSObjectProtocol?
+  let log = Logger(subsystem: "com.fortunexbt.bollard", category: "panel")
   lazy var hotkey = Hotkey { [weak self] in self?.toggle() }
 
   func applicationDidFinishLaunching(_ note: Notification) {
     NSApp.setActivationPolicy(.accessory)
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    item.button?.image = NSImage(
-      systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: "Bollard"
-    )
+    item.button?.image = Self.menuBarIcon
     item.button?.target = self
     item.button?.action = #selector(toggle)
     item.button?.toolTip = "Bollard — servers on your Mac · \(Hotkey.description)"
@@ -38,7 +38,7 @@ final class MenuPanel: NSPanel {
     panel.isOpaque = false
     panel.backgroundColor = .clear
     panel.hasShadow = true
-    panel.hidesOnDeactivate = true
+    panel.hidesOnDeactivate = false
     panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     let material = NSVisualEffectView()
     material.material = .popover
@@ -68,7 +68,7 @@ final class MenuPanel: NSPanel {
           store.renaming = nil
           return nil
         }
-        close()
+        close(reason: "escape")
         return nil
       }
       if event.keyCode == 3, event.modifierFlags.contains(.command) {  // ⌘F
@@ -77,15 +77,10 @@ final class MenuPanel: NSPanel {
       }
       return store.handle(event) ? nil : event
     }
-    activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-      forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-    ) { [weak self] notification in
-      guard
-        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-          as? NSRunningApplication,
-        app.processIdentifier != getpid()
-      else { return }
-      Task { @MainActor in self?.close() }
+    spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in self?.close(reason: "space changed") }
     }
     if store.hotkeyEnabled { hotkey.register() }
     if store.notify { store.notifier.prepare() }
@@ -99,6 +94,20 @@ final class MenuPanel: NSPanel {
     if CommandLine.arguments.contains("--show") {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() }
     }
+  }
+  /// The bollard glyph as a template image, so it follows the menu bar's colours.
+  static var menuBarIcon: NSImage? {
+    if let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
+      let image = NSImage(contentsOf: url)
+    {
+      image.isTemplate = true
+      image.size = NSSize(width: 18, height: 18)
+      image.accessibilityDescription = "Bollard"
+      return image
+    }
+    return NSImage(
+      systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: "Bollard"
+    )
   }
   func updatePanel() {
     scheduleRefresh()
@@ -142,17 +151,27 @@ final class MenuPanel: NSPanel {
       panel.setFrame(frame, display: true)
     }
   }
+  /// Where the click came from: the status item that was clicked, or the menu bar's screen for the hotkey.
+  var clickScreen: NSScreen? { item.button?.window?.screen ?? NSScreen.main }
   @objc func toggle() {
-    if panel.isVisible {
-      close()
+    // A panel left open on another Space or display is invisible here; treat it as closed and reopen
+    // where the user is, instead of silently closing it.
+    let here = panel.isVisible && panel.isOnActiveSpace && panel.screen == clickScreen
+    log.info(
+      "toggle: visible=\(self.panel.isVisible) onActiveSpace=\(self.panel.isOnActiveSpace) sameScreen=\(self.panel.screen == self.clickScreen)"
+    )
+    if here {
+      close(reason: "toggle")
     } else {
+      if panel.isVisible { panel.orderOut(nil) }
       store.visible = true
       scheduleRefresh()
       store.refresh()
       updatePanel()
-      NSApp.activate(ignoringOtherApps: true)
       panel.makeKeyAndOrderFront(nil)
       observeOutsideClicks()
+      log.info(
+        "opened on \(self.panel.screen?.localizedName ?? "unknown screen", privacy: .public)")
     }
   }
   func scheduleRefresh() {
@@ -181,12 +200,23 @@ final class MenuPanel: NSPanel {
   func observeOutsideClicks() {
     guard outsideMonitor == nil else { return }
     outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown])
-    { [weak self] _ in
-      Task { @MainActor in self?.close() }
+    { [weak self] event in
+      // Global events carry screen coordinates; a synthetic click may not move the cursor, so check both.
+      let location = event.locationInWindow
+      Task { @MainActor in
+        guard let self else { return }
+        // A click on the status item itself belongs to toggle(), not to "clicked elsewhere".
+        if let button = self.item.button, let window = button.window {
+          let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+          if frame.contains(NSEvent.mouseLocation) || frame.contains(location) { return }
+        }
+        self.close(reason: "outside click")
+      }
     }
   }
-  func close() {
+  func close(reason: String = "close") {
     guard store.visible || panel.isVisible else { return }
+    log.info("close: \(reason, privacy: .public)")
     if let monitor = outsideMonitor {
       NSEvent.removeMonitor(monitor)
       outsideMonitor = nil
