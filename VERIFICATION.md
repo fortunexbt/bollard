@@ -31,7 +31,7 @@ No production server shutdown, Minecraft world-save/backup cycle, or reboot was 
 
 ## 2.0.0 — every process stoppable, kernel-table discovery — 2026-10-23
 
-Measured on Fortune's Mac while other agent work kept the load average between 160 and 190. The build shell runs at nice 5, so wall-clock figures from it are pessimistic; the kernel-call costs below are what the app itself pays.
+Measured on the development Mac while other agent work kept the load average between 160 and 190. The build shell runs at nice 5, so wall-clock figures from it are pessimistic; the kernel-call costs below are what the app itself pays.
 
 - The 1.1.1 build listed 14 workloads and refused to stop all 14 (reasons: parent shell, detached launcher, unreadable child metadata, supervisor). Those rules are gone. Only launchd, Bollard itself, other users' processes, macOS system paths, terminals, editors, coding agents, session processes, interactive shells and game clients stay protected, and they are excluded from kill sets rather than blocking them.
 - Discovery now uses `KERN_PROC_ALL` and `net.inet.tcp.pcblist_n` (one call each). On this Mac the socket table returned every listener with its owning PID, and the first-sight descriptor check confirmed all of them. Release bench, 15 steady scans over 501 processes and 14 listeners: process table 0.32 ms, socket table 0.22 ms, policy 7.5 ms, full steady scan 9.7 ms median (p95 15.5 ms); first scan 113 ms including `launchctl list`. Full distribution in `docs/performance/scan-2026-10-23.json`. The installed CLI's first `--list` over 470 processes took 162 ms of scan time.
