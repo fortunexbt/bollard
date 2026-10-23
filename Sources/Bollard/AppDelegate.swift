@@ -227,6 +227,7 @@ final class MenuPanel: NSPanel {
     store.armed = nil
     store.renaming = nil
     store.search = ""
+    store.selected = nil
   }
 }
 

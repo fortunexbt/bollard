@@ -168,7 +168,7 @@ struct Detail: View {
           }
         }.frame(width: 65)
       }
-      if !w.root.cwd.isEmpty {
+      if !w.root.cwd.isEmpty, w.root.cwd != "/", w.section != .system {
         Menu("Project") {
           Button("Open folder") { NSWorkspace.shared.open(URL(fileURLWithPath: w.root.cwd)) }
           Button("Reveal in Finder") {
