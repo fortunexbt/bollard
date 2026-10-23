@@ -1,233 +1,325 @@
 import Foundation
 import ProcessBridge
 
+/// Immutable-per-generation process facts, read once when a process is first seen.
+struct Detail {
+  var unique: UInt64
+  var parentUnique: UInt64
+  var version: Int32
+  var path: String
+  var args: [String]
+}
+
 public enum Native {
-  public static func read(_ pid: Int32) -> Proc? {
-    var raw = DPProcess()
-    guard dp_read(pid, &raw) == 1 else { return nil }
-    func string<T>(_ value: inout T) -> String {
-      withUnsafePointer(to: &value) {
-        $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { String(cString: $0) }
-      }
+  static func cString<T>(_ value: inout T) -> String {
+    withUnsafePointer(to: &value) {
+      $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { String(cString: $0) }
     }
+  }
+  public static func table() throws -> [DPEntry] {
+    var buffer = [DPEntry](repeating: DPEntry(), count: 8192)
+    let count = dp_table(&buffer, Int32(buffer.count))
+    guard count > 0 else { throw SafetyError("Process table unavailable: \(errorText(count))") }
+    return Array(buffer.prefix(Int(count)))
+  }
+  static func detail(_ pid: Int32) -> Detail? {
+    var raw = DPIdentity()
+    guard dp_identity(pid, &raw) == 1 else { return nil }
     let argv = [CChar](unsafeUninitializedCapacity: 262144) { buffer, initializedCount in
       initializedCount = max(0, Int(dp_args(pid, buffer.baseAddress!, Int32(buffer.count))))
     }
     let args = argv.split(separator: 0).map {
       String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
+    return Detail(
+      unique: raw.unique, parentUnique: raw.parent_unique, version: raw.version,
+      path: cString(&raw.path), args: args)
+  }
+  static func cwd(_ pid: Int32) -> String {
+    var buffer = [CChar](repeating: 0, count: 4096)
+    return dp_cwd(pid, &buffer, Int32(buffer.count)) == 1 ? String(cString: buffer) : ""
+  }
+  static func usage(_ pid: Int32) -> (memory: UInt64, cpu: UInt64)? {
+    var raw = DPUsage()
+    return dp_usage(pid, &raw) == 1 ? (raw.memory, raw.cpu) : nil
+  }
+  /// A complete process record, used by control paths that must not trust a cached scan.
+  public static func read(_ pid: Int32) -> Proc? {
+    guard let entry = try? table().first(where: { $0.pid == pid }), let d = detail(pid) else {
+      return nil
+    }
     var p = Proc(
-      pid: pid, parent: raw.ppid, start: raw.start, unique: raw.unique, version: raw.version,
-      parentUnique: raw.parent_unique, uid: raw.uid, path: string(&raw.path), cwd: string(&raw.cwd),
-      args: args, memory: raw.memory, cpuTime: raw.cpu)
-    p.status = raw.status
+      pid: pid, parent: entry.ppid, start: entry.start, unique: d.unique, version: d.version,
+      parentUnique: d.parentUnique, pgid: entry.pgid, uid: entry.uid, path: d.path,
+      cwd: cwd(pid), args: d.args)
+    p.status = entry.status
+    if let u = usage(pid) {
+      p.memory = u.memory
+      p.cpuTime = u.cpu
+    }
     return p
   }
-  public static func snapshot(includingOtherUsers: Bool = false) -> [Int32: Proc] {
-    var ids = [Int32](repeating: 0, count: 32768)
-    let count = dp_pids(&ids, Int32(ids.count))
-    guard count > 0, count < ids.count else { return [:] }
-    return Dictionary(
-      uniqueKeysWithValues: ids.prefix(Int(count)).filter { $0 > 0 }.compactMap { pid in
-        guard let p = read(pid), includingOtherUsers || p.uid == getuid() else { return nil }
-        return (pid, p)
-      })
+  /// A complete uncached snapshot for control paths.
+  public static func snapshot() throws -> [Int32: Proc] {
+    let me = getuid()
+    var all: [Int32: Proc] = [:]
+    for e in try table() where e.pid > 0 {
+      var comm = e.comm
+      let name = cString(&comm)
+      var p: Proc
+      if e.uid == me, e.status != 5, let d = detail(e.pid) {
+        p = Proc(
+          pid: e.pid, parent: e.ppid, start: e.start, unique: d.unique, version: d.version,
+          parentUnique: d.parentUnique, pgid: e.pgid, uid: e.uid, path: d.path, cwd: cwd(e.pid),
+          args: d.args)
+      } else {
+        p = Proc(
+          pid: e.pid, parent: e.ppid, start: e.start, unique: 0, version: 0, pgid: e.pgid,
+          uid: e.uid, path: "", cwd: "", args: [])
+      }
+      p.status = e.status
+      if p.comm.isEmpty { p.comm = name }
+      all[e.pid] = p
+    }
+    return all
+  }
+  public static func listeners() throws -> [Listener] {
+    var buffer = [DPListener](repeating: DPListener(), count: 4096)
+    let count = dp_listeners(&buffer, Int32(buffer.count))
+    guard count >= 0 else { throw SafetyError("Socket table unavailable: \(errorText(count))") }
+    return buffer.prefix(Int(count)).map { raw in
+      var l = raw
+      let bytes = withUnsafeBytes(of: &l.address) { Array($0) }
+      return Listener(
+        port: Int(l.port), address: addressText(bytes, family: l.family), wildcard: l.wildcard != 0,
+        pid: l.pid,
+        uid: l.uid, socket: l.socket)
+    }
+  }
+  static func addressText(_ bytes: [UInt8], family: UInt8) -> String {
+    func dotted(_ slice: ArraySlice<UInt8>) -> String {
+      slice.map { String($0) }.joined(separator: ".")
+    }
+    if family == 4 { return dotted(bytes[0..<4]) }
+    let mapped = bytes[0..<10].allSatisfy { $0 == 0 } && bytes[10] == 0xff && bytes[11] == 0xff
+    if mapped { return dotted(bytes[12..<16]) }
+    if bytes.allSatisfy({ $0 == 0 }) { return "::" }
+    var groups: [String] = []
+    for i in stride(from: 0, to: 16, by: 2) {
+      let value = Int(bytes[i]) << 8 | Int(bytes[i + 1])
+      groups.append(String(value, radix: 16))
+    }
+    return groups.joined(separator: ":")
+  }
+  public static func ownsSocket(_ pid: Int32, _ socket: UInt64) -> Bool {
+    dp_owns_socket(pid, socket) == 1
   }
   public static func signal(_ p: Proc, _ sig: Int32) throws {
-    var raw = DPProcess()
-    guard dp_read(p.pid, &raw) == 1, raw.start == p.identity.start, raw.unique == p.identity.unique,
-      raw.version == p.identity.version
-    else { throw SafetyError("Process exited or changed identity.") }
-    let code = dp_signal(raw, sig)
-    guard code == 0 else { throw SafetyError("Signal refused: \(String(cString:strerror(code)))") }
+    let code = dp_signal(p.pid, p.identity.start, p.identity.unique, p.identity.version, sig)
+    guard code == 0 else {
+      throw SafetyError(
+        code == ESRCH
+          ? "Process \(p.pid) already exited or changed identity."
+          : "Signal refused for \(p.pid): \(errorText(-code))")
+    }
   }
-  public static func output(_ path: String, _ args: [String]) throws -> String {
+  static func errorText(_ code: Int32) -> String { String(cString: strerror(abs(code))) }
+  public static func output(_ path: String, _ args: [String], timeout: TimeInterval = 3) throws
+    -> String
+  {
     let process = Process()
     let pipe = Pipe()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = args
     process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
+    process.standardError = pipe
     try process.run()
     let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: watchdog)
+    DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     watchdog.cancel()
-    guard
-      process.terminationStatus == 0
-        || (path.hasSuffix("lsof") && process.terminationStatus == 1 && data.isEmpty)
-    else {
-      throw SafetyError("Discovery command failed: \(URL(fileURLWithPath:path).lastPathComponent)")
+    let text = String(decoding: data, as: UTF8.self)
+    guard process.terminationStatus == 0 else {
+      let name = URL(fileURLWithPath: path).lastPathComponent
+      let line =
+        text.split(separator: "\n").last.map(String.init) ?? "exit \(process.terminationStatus)"
+      throw SafetyError("\(name): \(line)")
     }
-    return String(decoding: data, as: UTF8.self)
+    return text
   }
-  public static func nativeListeners(_ all: [Int32: Proc]) throws -> [Int32: [Int]] {
-    var candidates = Set<Int32>()
-    for p in all.values where Policy.kind(p, listening: true) != nil {
-      candidates.formUnion(Policy.descendants(p.pid, all).map(\.pid))
-    }
-    var result: [Int32: [Int]] = [:]
-    for pid in candidates {
-      var ports = [Int32](repeating: 0, count: 1024)
-      let count = dp_tcp_ports(pid, &ports, Int32(ports.count))
-      if count == -ESRCH || count == -ENOENT { continue }
-      guard count >= 0 else {
-        throw SafetyError(
-          "Socket inspection unavailable for PID \(pid): \(String(cString: strerror(-count)))")
-      }
-      guard let current = Native.read(pid), current.identity == all[pid]?.identity else { continue }
-      if count > 0 { result[pid] = Array(Set(ports.prefix(Int(count)).map(Int.init))).sorted() }
+  public static func launchdLabels() throws -> [Int32: String] {
+    var result: [Int32: String] = [:]
+    for line in try output("/bin/launchctl", ["list"]).split(separator: "\n") {
+      let c = line.split(whereSeparator: { $0.isWhitespace })
+      if c.count >= 3, let pid = Int32(c[0]) { result[pid] = String(c[2]) }
     }
     return result
   }
-  public static func listeners() throws -> [Int32: [Int]] {
-    let text = try output(
-      "/usr/sbin/lsof", ["-nP", "-a", "-u", String(getuid()), "-iTCP", "-sTCP:LISTEN", "-Fpn"])
-    var pid: Int32 = 0
-    var result: [Int32: [Int]] = [:]
-    for line in text.split(separator: "\n") {
-      if line.first == "p" { pid = Int32(line.dropFirst()) ?? 0 }
-      if line.first == "n", let part = line.split(separator: ":").last, let port = Int(part),
-        pid > 0
-      {
-        result[pid, default: []].append(port)
-      }
-    }
-    return result.mapValues { Array(Set($0)).sorted() }
-  }
 }
+
 public struct Scan: Sendable {
   public var workloads: [Workload]
+  public var listeners: [Listener]
   public var count: Int
   public var duration: Double
   public var date: Date
-  public var usedSocketFallback: Bool = false
 }
+
+/// Builds a process snapshot cheaply: one kernel call for the table, one for sockets, and
+/// per-process detail only for generations not seen before.
 public final class Scanner {
+  private struct Key: Hashable {
+    let pid: Int32
+    let start: UInt64
+  }
+  private var details: [Key: Detail] = [:]
+  private var cwds: [Key: String] = [:]
   private var previous: [Int32: Proc] = [:]
   private var time = Date()
   private var orphans = Set<Identity>()
+  private struct SocketKey: Hashable {
+    let socket: UInt64
+    let port: Int
+    let reported: Int32
+  }
+  private var verifiedSockets: [SocketKey: Int32] = [:]
   private var launcherCache = LaunchOwnershipCache()
+  private var history: [Identity: [Sample]] = [:]
   public init() {}
+
   public func scan() throws -> Scan {
     let begin = Date()
-    var all = Native.snapshot()
-    let ports: [Int32: [Int]]
-    var usedFallback = false
-    do { ports = try Native.nativeListeners(all) } catch {
-      ports = try Native.listeners()
-      usedFallback = true
+    let entries = try Native.table()
+    let me = getuid()
+    let live = Set(entries.map { Key(pid: $0.pid, start: $0.start) })
+    details = details.filter { live.contains($0.key) }
+    cwds = cwds.filter { live.contains($0.key) }
+    var all: [Int32: Proc] = [:]
+    all.reserveCapacity(entries.count)
+    for e in entries where e.pid > 0 {
+      let key = Key(pid: e.pid, start: e.start)
+      var comm = e.comm
+      let name = Native.cString(&comm)
+      if e.uid == me, e.status != 5 {
+        guard let d = details[key] ?? Native.detail(e.pid) else { continue }
+        details[key] = d
+        let cwd = cwds[key] ?? Native.cwd(e.pid)
+        cwds[key] = cwd
+        var p = Proc(
+          pid: e.pid, parent: e.ppid, start: e.start, unique: d.unique, version: d.version,
+          parentUnique: d.parentUnique, pgid: e.pgid, uid: e.uid, path: d.path, cwd: cwd,
+          args: d.args)
+        p.status = e.status
+        if p.comm.isEmpty { p.comm = name }
+        all[e.pid] = p
+      } else {
+        var p = Proc(
+          pid: e.pid, parent: e.ppid, start: e.start, unique: 0, version: 0, pgid: e.pgid,
+          uid: e.uid, path: "", cwd: "", args: [])
+        p.status = e.status
+        p.comm = name
+        all[e.pid] = p
+      }
     }
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
+    let listeners = verify(try Native.listeners(), all)
     let elapsed = begin.timeIntervalSince(time)
-    for (id, var p) in all {
-      if let old = previous[id], old.identity == p.identity {
-        if elapsed > 0, p.cpuTime >= old.cpuTime {
-          p.cpu = Double(p.cpuTime - old.cpuTime) / 1e9 / elapsed * 100
-          all[id] = p
-        }
-        if old.parent != 1, p.parent == 1, let parent = previous[old.parent],
-          all[old.parent]?.identity != parent.identity
-        {
-          orphans.insert(p.identity)
-        }
+    for (id, p) in all where p.uid == me {
+      if let old = previous[id], old.identity == p.identity, old.parent != 1, p.parent == 1,
+        let parent = previous[old.parent], all[old.parent]?.identity != parent.identity
+      {
+        orphans.insert(p.identity)
       }
     }
     orphans = orphans.intersection(Set(all.values.map(\.identity)))
-    let oldLabels = launcherCache.current(in: all)
-    var workloads = Policy.workloads(all, ports: ports, labels: oldLabels, orphans: orphans)
-    // Promoted shell/npm roots, rather than only their listening children, own launch labels.
-    if let labels = try? launcherCache.update(
-      roots: workloads.map(\.root), processes: all,
-      lookup: {
-        let output = try Native.output("/bin/launchctl", ["list"])
-        var result: [Int32: String] = [:]
-        for line in output.split(separator: "\n") {
-          let c = line.split(whereSeparator: { $0.isWhitespace })
-          if c.count >= 3, let pid = Int32(c[0]) { result[pid] = String(c[2]) }
-        }
-        return result
-      }), labels != oldLabels
+    let labels = launcherCache.current(in: all)
+    var workloads = Policy.workloads(all, listeners: listeners, labels: labels, orphans: orphans)
+    if let fresh = try? launcherCache.update(
+      roots: workloads.map(\.root), processes: all, lookup: Native.launchdLabels), fresh != labels
     {
-      workloads = Policy.workloads(all, ports: ports, labels: labels, orphans: orphans)
+      workloads = Policy.workloads(all, listeners: listeners, labels: fresh, orphans: orphans)
     }
+    // Resource sampling only for processes that are displayed.
+    var sampled: [Int32: Proc] = [:]
+    for index in workloads.indices {
+      for m in workloads[index].members.indices {
+        var p = workloads[index].members[m]
+        if let s = sampled[p.pid] {
+          p = s
+        } else {
+          if let u = Native.usage(p.pid) {
+            p.memory = u.memory
+            p.cpuTime = u.cpu
+            if elapsed > 0, let old = previous[p.pid], old.identity == p.identity,
+              u.cpu >= old.cpuTime
+            {
+              p.cpu = Double(u.cpu - old.cpuTime) / 1e9 / elapsed * 100
+            }
+          }
+          sampled[p.pid] = p
+        }
+        workloads[index].members[m] = p
+        if p.pid == workloads[index].root.pid { workloads[index].root = p }
+      }
+      let w = workloads[index]
+      var samples = history[w.id] ?? []
+      samples.append(Sample(cpu: w.cpu, memory: w.memory))
+      if samples.count > 60 { samples.removeFirst(samples.count - 60) }
+      history[w.id] = samples
+      workloads[index].history = samples
+      // Directories can change after launch; refresh the displayed root's each scan.
+      let key = Key(pid: w.root.pid, start: w.root.identity.start)
+      let cwd = Native.cwd(w.root.pid)
+      if !cwd.isEmpty { cwds[key] = cwd }
+    }
+    history = history.filter { entry in workloads.contains { $0.id == entry.key } }
+    for (pid, p) in sampled { all[pid] = p }
     previous = all
     time = begin
     return Scan(
-      workloads: workloads, count: all.count, duration: Date().timeIntervalSince(begin),
-      date: Date(), usedSocketFallback: usedFallback)
+      workloads: workloads, listeners: listeners, count: all.count,
+      duration: Date().timeIntervalSince(begin), date: Date())
   }
-}
-public enum Controller {
-  public static func stop(_ w: Workload) throws {
-    let initial = Native.snapshot(includingOtherUsers: true)
-    try Policy.validate(w, live: initial)
-    guard !w.members.contains(where: { initial[$0.pid]?.status == 4 }) else {
-      throw SafetyError("A process is already suspended. Refusing to change its state.")
-    }
-    if w.usesMinecraftController {
-      // The audited controller sends Minecraft's console stop, waits for world save,
-      // creates a backup, and cleans up its own caffeinate/tunnel children.
-      try Policy.validate(w, live: Native.snapshot(includingOtherUsers: true))
-      guard LocalControllers.isMinecraftController(w.root) else {
-        throw SafetyError("Controller changed since discovery.")
+
+  /// The socket table names the last process that touched each socket. Confirm ownership through
+  /// the process's descriptors the first time a socket is seen, and repair inherited sockets.
+  private func verify(_ listeners: [Listener], _ all: [Int32: Proc]) -> [Listener] {
+    let me = getuid()
+    var seen = Set<SocketKey>()
+    let result = listeners.map { l -> Listener in
+      let key = SocketKey(socket: l.socket, port: l.port, reported: l.pid)
+      seen.insert(key)
+      guard l.uid == me else { return l }
+      if let pid = verifiedSockets[key], all[pid] != nil {
+        var v = l
+        v.pid = pid
+        return v
       }
-      try Native.signal(w.root, SIGTERM)
-      let deadline = Date().addingTimeInterval(60)
-      while Date() < deadline {
-        if w.members.allSatisfy({ old in
-          guard let now = Native.read(old.pid) else { return true }
-          return now.identity != old.identity || now.status == 5
-        }) {
-          return
+      var candidates = [l.pid]
+      if let p = all[l.pid] {
+        candidates += all.values.filter { $0.parent == l.pid || $0.pid == p.parent }.map(\.pid)
+      }
+      candidates += all.values.filter { $0.uid == me }.sorted {
+        $0.identity.start > $1.identity.start
+      }.map(\.pid)
+      var checked = Set<Int32>()
+      for pid in candidates where checked.insert(pid).inserted {
+        if Native.ownsSocket(pid, l.socket) {
+          verifiedSockets[key] = pid
+          var v = l
+          v.pid = pid
+          return v
         }
-        Thread.sleep(forTimeInterval: 0.2)
       }
-      throw SafetyError("Minecraft is still saving or backing up. No force kill was sent.")
+      return l
     }
-    // Freeze parent first, then descendants. Validate the now-quiescent tree before TERM.
-    var frozen: [Proc] = []
-    defer { for p in frozen { try? Native.signal(p, SIGCONT) } }
-    var pending = w.members
-    while !pending.isEmpty {
-      guard
-        let index = pending.firstIndex(where: { candidate in
-          candidate.pid == w.root.pid || frozen.contains(where: { $0.pid == candidate.parent })
-        })
-      else { throw SafetyError("Could not order process tree.") }
-      let p = pending.remove(at: index)
-      let live = Native.snapshot(includingOtherUsers: true)
-      try Policy.validate(w, live: live)
-      let ours = Set(frozen.map(\.identity))
-      guard !w.members.contains(where: { !ours.contains($0.identity) && live[$0.pid]?.status == 4 })
-      else {
-        throw SafetyError(
-          "Another process was suspended during Stop. Refusing to change its state.")
-      }
-      try Native.signal(p, SIGSTOP)
-      frozen.append(p)
-    }
-    try Policy.validate(w, live: Native.snapshot(includingOtherUsers: true))
-    for p in frozen { try Native.signal(p, SIGTERM) }
-    for p in frozen { try? Native.signal(p, SIGCONT) }
-    let deadline = Date().addingTimeInterval(5)
-    while Date() < deadline {
-      // Zombies have exited and can no longer run or own listeners.
-      if w.members.allSatisfy({ old in
-        guard let now = Native.read(old.pid) else { return true }
-        return now.identity != old.identity || now.status == 5
-      }) {
-        return
-      }
-      Thread.sleep(forTimeInterval: 0.1)
-    }
-    throw SafetyError(
-      "Termination requested, but some processes are still exiting. No force kill was sent.")
+    verifiedSockets = verifiedSockets.filter { seen.contains($0.key) }
+    return result
   }
 }
 
-/// Owns scan state on its own executor. Safety actions always take fresh uncached snapshots.
+/// Owns scan state on its own executor. Control actions always take fresh snapshots.
 public actor ProcessMonitor {
   private let scanner = Scanner()
   public init() {}

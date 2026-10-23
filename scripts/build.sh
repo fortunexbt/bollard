@@ -14,8 +14,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>DevPorts</string>
 <key>CFBundleDisplayName</key><string>DevPorts</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.1.1</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>2.0.0</string>
+<key>CFBundleVersion</key><string>4</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

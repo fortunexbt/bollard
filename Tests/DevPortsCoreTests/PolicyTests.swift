@@ -3,107 +3,168 @@ import DevPortsCore
 import Foundation
 
 struct PolicyTests {
-  func p(_ id: Int32, _ parent: Int32, _ path: String, _ args: [String]) -> Proc {
-    Proc(pid: id, parent: parent, path: path, args: args)
+  func p(
+    _ id: Int32, _ parent: Int32, _ path: String, _ args: [String], cwd: String = "/tmp/project"
+  ) -> Proc {
+    Proc(pid: id, parent: parent, path: path, cwd: cwd, args: args)
   }
+  func l(_ port: Int, _ pid: Int32, wildcard: Bool = false) -> Listener {
+    Listener(port: port, address: wildcard ? "0.0.0.0" : "127.0.0.1", wildcard: wildcard, pid: pid)
+  }
+  func check(_ condition: Bool, _ message: String, line: Int = #line) {
+    precondition(condition, "line \(line): \(message)")
+  }
+
   func testSiblingAndShellBoundary() {
-    let shell = p(10, 1, "/bin/zsh", ["zsh"])
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
     let a = p(11, 10, "/opt/homebrew/bin/node", ["node", "/tmp/project/server.js"])
     let b = p(12, 10, "/opt/homebrew/bin/node", ["node", "/tmp/project/other.js"])
-    let rows = Policy.workloads([10: shell, 11: a, 12: b], ports: [11: [3000], 12: [3001]])
-    precondition(rows.count == 2)
-    precondition(rows.first { $0.root.pid == 11 }?.members.map(\.pid) == [11])
+    let rows = Policy.workloads([10: shell, 11: a, 12: b], listeners: [l(3000, 11), l(3001, 12)])
+    check(rows.count == 2, "two sibling servers")
+    for row in rows {
+      check(
+        row.members.count == 1 && row.blocked == nil && row.cautions.isEmpty, "each stoppable alone"
+      )
+      check(row.section == .servers && row.provenance == "Terminal · zsh", "\(row.provenance)")
+    }
   }
-  func testInfrastructureAndGradleAreHidden() {
+  func testProtectedProcessesAreNeverRoots() {
+    let agent = p(20, 1, "/usr/local/bin/claude", ["claude"])
+    let terminal = p(
+      21, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal", ["Terminal"])
+    let shell = p(22, 1, "/bin/zsh", ["-zsh"])
+    let editor = p(
+      23, 1, "/Applications/Visual Studio Code.app/Contents/MacOS/Electron", ["Electron"])
+    let rows = Policy.workloads(
+      [20: agent, 21: terminal, 22: shell, 23: editor],
+      listeners: [l(1, 20), l(2, 21), l(3, 22), l(4, 23)])
+    check(
+      rows.count == 4 && rows.allSatisfy { $0.blocked != nil && $0.members.isEmpty },
+      "all read only")
+    check(rows.first { $0.root.pid == 23 }?.section == .apps, "editor listed under Apps")
+    check(rows.first { $0.root.pid == 20 }?.section == .system, "agent listed under System")
+    let versioned = p(
+      24, 1, "/Users/me/.local/share/claude/versions/2.1.309", ["claude", "bg-spare"])
+    let server = p(25, 24, "/usr/bin/python3", ["python3", "-m", "http.server"])
+    let spawned = Policy.workloads(
+      [24: versioned, 25: server], listeners: [l(8000, 25), l(8001, 24)])
+    check(spawned.first { $0.root.pid == 24 }?.blocked != nil, "version-named claude is an agent")
+    let child = spawned.first { $0.root.pid == 25 }!
+    check(
+      child.provenance == "Claude Code" && child.cautions.isEmpty,
+      "\(child.provenance) \(child.cautions)")
+    check(Policy.workloads([22: shell], listeners: []).isEmpty, "a silent shell is not a workload")
+  }
+  func testToolsAreVisibleButReadOnly() {
     for (path, args) in [
       ("/opt/homebrew/bin/node", ["node", "/x/playwright-mcp"]),
       ("/usr/bin/java", ["java", "org.gradle.launcher.daemon.bootstrap.GradleDaemon"]),
       ("/usr/bin/python3", ["python3", "-m", "ipykernel_launcher"]),
-      ("/Applications/ChatGPT.app/Contents/node", ["node", "./server.mjs"]),
     ] {
-      let proc = p(20, 1, path, args)
-      precondition(Policy.workloads([20: proc], ports: [20: [9999]]).isEmpty)
+      let rows = Policy.workloads([20: p(20, 1, path, args)], listeners: [l(9999, 20)])
+      check(rows.count == 1 && rows[0].section == .system && rows[0].blocked != nil, "\(args)")
+      check(
+        Policy.workloads([20: p(20, 1, path, args)], listeners: []).isEmpty,
+        "silent tools stay hidden")
     }
   }
-  func testMinecraftIsNotWeb() {
-    let s = p(21, 10, "/usr/bin/java", ["java", "-jar", "server.jar", "nogui"])
-    let row = Policy.workloads([21: s], ports: [21: [25565]]).first
-    precondition(row?.kind.name == "Minecraft")
-    precondition(row?.kind.web == false)
+  func testApplicationsMergeHelpers() {
+    let main = p(40, 1, "/Applications/1Password.app/Contents/MacOS/1Password", ["1Password"])
+    let helper = p(
+      41, 40,
+      "/Applications/1Password.app/Contents/Frameworks/1Password Helper.app/Contents/MacOS/1Password Helper",
+      ["1Password Helper"])
+    let rows = Policy.workloads([40: main, 41: helper], listeners: [l(6263, 41), l(6264, 40)])
+    check(rows.count == 1, "one row per application")
+    let row = rows[0]
+    check(
+      row.root.pid == 40 && row.section == .apps && row.blocked == nil, "rooted at the main process"
+    )
+    check(
+      row.ports == [6263, 6264] && row.members.count == 2 && row.name == "1Password",
+      "\(row.ports) \(row.name)")
+    check(row.restartReason != nil, "apps do not restart from Terminal")
   }
-  func testProtectedDescendantRefuses() {
-    let node = p(21, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let agent = p(22, 21, "/usr/local/bin/codex", ["codex"])
-    precondition(
-      Policy.workloads([21: node, 22: agent], ports: [21: [3000]]).first?.refusal != nil)
+  func testFrameworkPythonIsNotAnApp() {
+    let python = p(
+      50, 10,
+      "/opt/homebrew/Cellar/python@3.12/3.12.15_1/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      ["Python", "-m", "archon.app", "serve"], cwd: "/Users/me/archon")
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
+    let rows = Policy.workloads([10: shell, 50: python], listeners: [l(8848, 50)])
+    check(
+      rows.count == 1 && rows[0].section == .servers && rows[0].name == "archon",
+      "\(rows.map(\.name))")
+    check(rows[0].kind.name == "Python", rows[0].kind.name)
+    let xcode = p(
+      51, 10,
+      "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+      ["python3", "stubborn.py"], cwd: "/tmp/fixture")
+    let system = Policy.workloads([10: shell, 51: xcode], listeners: [l(8000, 51)]).first!
+    check(
+      system.section == .servers && system.blocked == nil && system.name == "fixture",
+      "system python is not Xcode: \(system.blocked ?? "")")
+    let chrome = p(
+      52, 1, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", ["Google Chrome"])
+    let helper = p(
+      53, 52,
+      "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/1/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+      ["Google Chrome Helper"])
+    let app = Policy.workloads([52: chrome, 53: helper], listeners: [l(9222, 53)])
+    check(
+      app.count == 1 && app[0].root.pid == 52 && app[0].section == .apps && app[0].ports == [9222],
+      "browser helper merges into its app")
   }
-  func testDetachedIsNotAutomaticallyOrphan() {
+  func testSystemAndForeignListeners() {
+    let other = Proc(pid: 60, parent: 1, uid: 0, path: "", args: [])
+    let daemon = p(61, 1, "/usr/libexec/rapportd", ["rapportd"])
+    let center = p(
+      62, 1, "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter",
+      ["ControlCenter"])
+    check(
+      Policy.workloads([62: center], listeners: [l(7000, 62, wildcard: true)]).first?.section
+        == .system, "system apps are System")
+    let rows = Policy.workloads(
+      [60: other, 61: daemon], listeners: [l(22, 60), l(49152, 61, wildcard: true)])
+    check(
+      rows.count == 2 && rows.allSatisfy { $0.section == .system && $0.blocked != nil },
+      "system rows read only")
+    check(rows.first { $0.root.pid == 61 }?.exposed == true, "wildcard listener flagged")
+  }
+  func testDetachedServerIsStoppable() {
     let s = p(21, 1, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let row = Policy.workloads([21: s], ports: [21: [3000]]).first!
-    precondition(!row.orphan)
-    precondition(row.refusal != nil)
+    let row = Policy.workloads([21: s], listeners: [l(3000, 21)]).first!
+    check(!row.orphan && row.blocked == nil && row.cautions.isEmpty, "\(row.cautions)")
+    check(row.provenance.hasPrefix("Detached"), row.provenance)
+    check(row.restartReason == nil, row.restartReason ?? "")
   }
-  func testPIDReuseRejected() throws {
-    let a = p(21, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let w = Policy.workloads([10: p(10, 1, "/bin/zsh", ["zsh"]), 21: a], ports: [21: [3000]]).first!
-    let changed = Proc(
-      pid: 21, parent: 10, start: 2, unique: 22, version: 2, path: a.path, args: a.args)
-    do {
-      try Policy.validate(w, live: [21: changed])
-      fatalError("PID reuse accepted")
-    } catch {}
+  func testLaunchdAndHomebrewCautions() {
+    let s = p(21, 1, "/opt/homebrew/bin/node", ["node", "server.js"])
+    let row = Policy.workloads(
+      [21: s], listeners: [l(3000, 21)], labels: [21: "homebrew.mxcl.postgresql@17"]
+    ).first!
+    check(row.blocked == nil && row.brewService == "postgresql@17", row.brewService ?? "nil")
+    check(row.cautions.first?.contains("Homebrew service postgresql@17") == true, "\(row.cautions)")
+    check(row.restartReason != nil, "launchd services do not restart from Terminal")
+    let agent = Policy.workloads(
+      [21: s], listeners: [l(3000, 21)], labels: [21: "local.storefront"]
+    ).first!
+    check(
+      agent.cautions.first?.contains("launchd as local.storefront") == true, "\(agent.cautions)")
+    check(agent.provenance == "launchd · local.storefront", agent.provenance)
   }
-  func testBackgroundAndAI() {
-    let watcher = p(31, 10, "/opt/homebrew/bin/node", ["node", "tsc", "--watch"])
-    precondition(Policy.workloads([31: watcher], ports: [:]).first?.kind.name == "Watcher")
-    let ollama = p(
-      32, 1, "/Applications/Ollama.app/Contents/Resources/ollama", ["ollama", "serve"])
-    precondition(Policy.workloads([32: ollama], ports: [32: [11434]]).first?.kind.name == "Ollama")
-    let client = p(33, 1, "/usr/bin/java", ["java", "org.prismlauncher.EntryPoint"])
-    precondition(Policy.workloads([33: client], ports: [33: [7881]]).isEmpty)
-    let notebook = p(34, 10, "/opt/homebrew/bin/python3", ["python3", "-m", "jupyter", "lab"])
-    precondition(
-      Policy.workloads([34: notebook], ports: [34: [8888]]).first?.kind.name == "Jupyter")
+  func testSupervisorIsCautionNotRefusal() {
+    let supervisor = p(10, 1, "/bin/zsh", ["zsh", "-c", "while true; do node server.js; done"])
+    let child = p(11, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
+    let row = Policy.workloads([10: supervisor, 11: child], listeners: [l(3000, 11)]).first!
+    check(row.blocked == nil && row.root.pid == 11, "child remains the root")
+    check(row.cautions.first?.contains("may restart it") == true, "\(row.cautions)")
+    let plain = p(10, 1, "/bin/zsh", ["zsh", "-c", "node server.js & node other.js & wait"])
+    let quiet = Policy.workloads([10: plain, 11: child], listeners: [l(3000, 11)]).first!
+    check(quiet.cautions.isEmpty, "\(quiet.cautions)")
   }
-  func testGenerationAndNewChildren() throws {
-    let shell = p(10, 1, "/bin/zsh", ["zsh"])
-    let root = p(20, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let child = Proc(
-      pid: 21, parent: 20, parentUnique: 20, path: "/opt/homebrew/bin/node",
-      args: ["node", "worker.js"])
-    let all: [Int32: Proc] = [10: shell, 20: root, 21: child]
-    let w = Policy.workloads(all, ports: [20: [3000]]).first!
-    try Policy.validate(w, live: all)
-    var live = all
-    var altered = child
-    altered.parentUnique = 999
-    live[21] = altered
-    do {
-      try Policy.validate(w, live: live)
-      fatalError("Parent generation drift accepted")
-    } catch {}
-    live = all
-    live[22] = p(22, 20, "/bin/zsh", ["zsh"])
-    do {
-      try Policy.validate(w, live: live)
-      fatalError("New protected child accepted")
-    } catch {}
-  }
-  func testDedicatedWrapperBoundary() {
-    let terminal = p(10, 1, "/bin/zsh", ["zsh"])
-    let wrapper = p(11, 10, "/bin/sh", ["sh", "-c", "node server.js"])
-    let node = p(12, 11, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let row = Policy.workloads([10: terminal, 11: wrapper, 12: node], ports: [12: [3000]]).first!
-    precondition(row.root.pid == 11 && !row.members.contains { $0.pid == 10 })
-    precondition(row.refusal == nil)
-  }
-  func testAppSupervisorAndNodePackageManager() {
-    let gui = p(40, 1, "/Applications/Ollama.app/Contents/MacOS/Ollama", ["Ollama"])
-    let service = p(
-      41, 40, "/Applications/Ollama.app/Contents/Resources/ollama", ["ollama", "serve"])
-    precondition(
-      Policy.workloads([40: gui, 41: service], ports: [41: [11434]]).first?.refusal != nil)
-    let shell = p(10, 1, "/bin/zsh", ["zsh"])
+  func testWrapperPromotion() {
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
     let npm = p(
       11, 10, "/opt/homebrew/bin/node",
       ["node", "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js", "run", "dev"])
@@ -111,35 +172,100 @@ struct PolicyTests {
     let server = p(
       13, 12, "/opt/homebrew/bin/node",
       ["node", "/tmp/project/node_modules/next/dist/bin/next", "dev"])
-    let row = Policy.workloads([10: shell, 11: npm, 12: wrapper, 13: server], ports: [13: [3000]])
+    let row = Policy.workloads(
+      [10: shell, 11: npm, 12: wrapper, 13: server], listeners: [l(3000, 13)]
+    ).first!
+    check(
+      row.root.pid == 11 && row.members.count == 3 && row.blocked == nil && row.cautions.isEmpty,
+      "npm owns the tree")
+    check(row.kind.name == "Next.js", row.kind.name)
+    let tsx = p(
+      20, 10, "/opt/homebrew/bin/node", ["node", "node_modules/.bin/tsx", "watch", "src/server.ts"])
+    let child = p(
+      21, 20, "/opt/homebrew/bin/node",
+      ["node", "--require", "/x/node_modules/tsx/dist/preflight.cjs", "src/server.ts"])
+    let promoted = Policy.workloads([10: shell, 20: tsx, 21: child], listeners: [l(4000, 21)])
       .first!
-    precondition(row.root.pid == 11 && row.members.count == 3 && row.refusal == nil)
+    check(promoted.root.pid == 20 && promoted.members.count == 2, "tsx promoted")
   }
-
-  func testForeignOwnerDescendantRefuses() throws {
-    let shell = p(10, 1, "/bin/zsh", ["zsh"])
+  func testKillSetExcludesProtectedDescendants() {
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
+    let node = p(21, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
+    let agent = p(22, 21, "/usr/local/bin/codex", ["codex"])
+    let grandchild = p(23, 22, "/opt/homebrew/bin/node", ["node", "mcp.js"])
+    let row = Policy.workloads(
+      [10: shell, 21: node, 22: agent, 23: grandchild], listeners: [l(3000, 21)]
+    ).first!
+    check(row.blocked == nil && row.members.map(\.pid) == [21], "\(row.members.map(\.pid))")
+    check(row.excluded.map(\.pid) == [22], "agent excluded with its subtree")
+    check(row.cautions.contains { $0.hasPrefix("Leaves running: codex (22)") }, "\(row.cautions)")
+  }
+  func testMinecraftIsNotWeb() {
+    let s = p(21, 10, "/usr/bin/java", ["java", "-jar", "server.jar", "nogui"])
+    let row = Policy.workloads([21: s], listeners: [l(25565, 21)]).first!
+    check(row.kind.name == "Minecraft" && !row.kind.web, row.kind.name)
+    check(row.cautions.contains { $0.contains("Force Quit skips saving") }, "\(row.cautions)")
+  }
+  func testBackgroundAndAI() {
+    let watcher = p(31, 10, "/opt/homebrew/bin/node", ["node", "tsc", "--watch"])
+    let rows = Policy.workloads([31: watcher], listeners: [])
+    check(rows.first?.kind.name == "Watcher" && rows.first?.section == .background, "watcher")
+    let ollama = p(
+      32, 1, "/Applications/Ollama.app/Contents/Resources/ollama", ["ollama", "serve"])
+    check(
+      Policy.workloads([32: ollama], listeners: [l(11434, 32)]).first?.section == .apps,
+      "bundled ollama is an app")
+    let client = p(33, 1, "/usr/bin/java", ["java", "org.prismlauncher.EntryPoint"])
+    check(
+      Policy.workloads([33: client], listeners: [l(7881, 33)]).first?.blocked != nil,
+      "game client read only")
+    let notebook = p(34, 10, "/opt/homebrew/bin/python3", ["python3", "-m", "jupyter", "lab"])
+    check(
+      Policy.workloads([34: notebook], listeners: [l(8888, 34)]).first?.kind.name == "Jupyter",
+      "jupyter")
+    let llama = p(35, 1, "/opt/homebrew/bin/llama-server", ["llama-server", "-m", "x.gguf"])
+    check(
+      Policy.workloads([35: llama], listeners: [l(9931, 35)]).first?.kind.name == "AI service",
+      "llama")
+    let unknown = p(36, 10, "/opt/homebrew/bin/workerd", ["workerd", "serve"])
+    check(
+      Policy.workloads([36: unknown], listeners: [l(8787, 36)]).first?.kind.name == "Wrangler",
+      "any listener is shown")
+  }
+  func testValidateTracksLiveTree() throws {
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
     let root = p(20, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let all: [Int32: Proc] = [10: shell, 20: root]
-    let row = Policy.workloads(all, ports: [20: [3000]]).first!
+    let child = Proc(
+      pid: 21, parent: 20, parentUnique: 20, path: "/opt/homebrew/bin/node",
+      args: ["node", "worker.js"])
+    let all: [Int32: Proc] = [10: shell, 20: root, 21: child]
+    let w = Policy.workloads(all, listeners: [l(3000, 20)]).first!
+    check(try Policy.validate(w, live: all).map(\.pid) == [20, 21], "kill set unchanged")
     var live = all
-    live[21] = Proc(pid: 21, parent: 20, uid: 0, path: "/usr/bin/sudo", args: ["sudo"])
+    live[21] = nil
+    check(try Policy.validate(w, live: live).map(\.pid) == [20], "exited member is fine")
+    live = all
+    live[22] = p(22, 20, "/opt/homebrew/bin/node", ["node", "late.js"])
+    check(
+      try Policy.validate(w, live: live).map(\.pid) == [20, 21, 22],
+      "new descendant joins the kill set")
+    live = all
+    live[23] = p(23, 20, "/usr/local/bin/claude", ["claude"])
+    check(
+      try Policy.validate(w, live: live).map(\.pid) == [20, 21], "new protected child is skipped")
+    live = all
+    live[20] = Proc(
+      pid: 20, parent: 10, start: 2, unique: 22, version: 2, path: root.path, args: root.args)
     do {
-      try Policy.validate(row, live: live)
-      fatalError("Foreign-owned descendant accepted")
+      try Policy.validate(w, live: live)
+      fatalError("PID reuse accepted")
     } catch {}
-  }
-  func testLaunchLabelFollowsPromotedRoot() {
-    let npm = p(
-      11, 1, "/opt/homebrew/bin/node",
-      ["node", "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js", "run", "dev"])
-    let wrapper = p(12, 11, "/bin/sh", ["sh", "-c", "next dev"])
-    let server = p(
-      13, 12, "/opt/homebrew/bin/node",
-      ["node", "/tmp/project/node_modules/next/dist/bin/next", "dev"])
-    let rows = Policy.workloads(
-      [11: npm, 12: wrapper, 13: server], ports: [13: [3000]], labels: [11: "local.storefront"])
-    precondition(rows.count == 1 && rows[0].id == npm.identity && rows[0].root.parent == 1)
-    precondition(rows[0].provenance == "launchd · local.storefront" && !rows[0].orphan)
+    live = all
+    live[21] = Proc(pid: 21, parent: 20, parentUnique: 20, path: "/bin/zsh", args: ["-zsh"])
+    do {
+      try Policy.validate(w, live: live)
+      fatalError("Changed member command accepted")
+    } catch {}
   }
   func testLaunchOwnershipTransitions() throws {
     var cache = LaunchOwnershipCache()
@@ -149,18 +275,18 @@ struct PolicyTests {
       calls += 1
       return [10: "first"]
     }
-    precondition(first[10] == "first" && calls == 1)
+    check(first[10] == "first" && calls == 1, "fetched once")
     _ = cache.update(roots: [original], processes: [10: original]) {
       fatalError("Unchanged generation fetched again")
     }
     let reused = Proc(
       pid: 10, parent: 1, start: 2, unique: 11, path: original.path, args: original.args)
-    precondition(cache.current(in: [10: reused]).isEmpty)
+    check(cache.current(in: [10: reused]).isEmpty, "reused pid has no label")
     let second = cache.update(roots: [reused], processes: [10: reused]) {
       calls += 1
       return [10: "second"]
     }
-    precondition(second[10] == "second" && calls == 2)
+    check(second[10] == "second" && calls == 2, "refetched for new generation")
     let fresh = p(12, 1, "/usr/bin/node", ["node", "server.js"])
     do {
       _ = try cache.update(roots: [fresh], processes: [12: fresh]) {
@@ -173,31 +299,17 @@ struct PolicyTests {
       calls += 1
       return [12: "retry"]
     }
-    precondition(retry[12] == "retry" && calls == 4)
-    let departed = cache.update(roots: [], processes: [:]) { fatalError("Empty roots fetched") }
-    precondition(departed.isEmpty)
+    check(retry[12] == "retry" && calls == 4, "retried after failure")
   }
-  func testUnreadableDescendantRefuses() {
-    let shell = p(10, 1, "/bin/zsh", ["zsh"])
-    let root = p(20, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    let unreadable = p(21, 20, "/opt/homebrew/bin/python3", [])
-    let row = Policy.workloads([10: shell, 20: root, 21: unreadable], ports: [20: [3000]]).first!
-    precondition(row.refusal != nil)
-  }
-  func testShellSupervisorRefuses() {
-    let supervisor = p(10, 1, "/bin/zsh", ["zsh", "-c", "while true; do node server.js; done"])
-    let child = p(11, 10, "/opt/homebrew/bin/node", ["node", "server.js"])
-    precondition(
-      Policy.workloads([10: supervisor, 11: child], ports: [11: [3000]]).first?.refusal != nil)
-    let opaque = p(10, 1, "/bin/zsh", ["zsh", "-c", "run_forever"])
-    precondition(
-      Policy.workloads([10: opaque, 11: child], ports: [11: [3000]]).first?.refusal != nil)
-    let siblings = p(
-      10, 1, "/bin/zsh",
-      ["zsh", "-c", "/opt/homebrew/bin/node server.js & /opt/homebrew/bin/node other.js & wait"])
-    precondition(
-      Policy.workloads([10: siblings, 11: child], ports: [11: [3000]]).first?.refusal == nil)
-
+  func testTextHelpers() {
+    check(
+      shellQuote("abc") == "abc" && shellQuote("a b") == "'a b'"
+        && shellQuote("it's") == "'it'\\''s'", "quoting")
+    check(
+      uptimeText(45) == "45s" && uptimeText(3700) == "1h 1m" && uptimeText(200_000) == "2d 7h",
+      "uptime")
+    check(memoryText(2_500_000_000) == "2.5 GB" && memoryText(12_000_000) == "12 MB", "memory")
+    check("hello world".has("o w") && !"hello".has("") && !"abc".has("abd"), "byte search")
   }
   func testPanelWithinEveryScreen() {
     for screen in [
@@ -209,33 +321,33 @@ struct PolicyTests {
         let frame = PanelPlacement.frame(
           anchor: CGRect(x: x, y: screen.maxY, width: 30, height: 25), screen: screen,
           desiredHeight: 1500)
-        precondition(screen.contains(frame), "Panel would leave screen")
+        check(screen.contains(frame), "Panel would leave screen")
       }
     }
   }
-
 }
 
 @main struct Checks {
   static func main() throws {
     let t = PolicyTests()
     t.testSiblingAndShellBoundary()
-    t.testInfrastructureAndGradleAreHidden()
+    t.testProtectedProcessesAreNeverRoots()
+    t.testToolsAreVisibleButReadOnly()
+    t.testApplicationsMergeHelpers()
+    t.testFrameworkPythonIsNotAnApp()
+    t.testSystemAndForeignListeners()
+    t.testDetachedServerIsStoppable()
+    t.testLaunchdAndHomebrewCautions()
+    t.testSupervisorIsCautionNotRefusal()
+    t.testWrapperPromotion()
+    t.testKillSetExcludesProtectedDescendants()
     t.testMinecraftIsNotWeb()
-    t.testProtectedDescendantRefuses()
-    t.testDetachedIsNotAutomaticallyOrphan()
-    try t.testPIDReuseRejected()
-    try t.testGenerationAndNewChildren()
     t.testBackgroundAndAI()
-    t.testDedicatedWrapperBoundary()
-    t.testPanelWithinEveryScreen()
-    t.testAppSupervisorAndNodePackageManager()
-    t.testUnreadableDescendantRefuses()
-    t.testLaunchLabelFollowsPromotedRoot()
+    try t.testValidateTracksLiveTree()
     try t.testLaunchOwnershipTransitions()
-    t.testShellSupervisorRefuses()
-    try t.testForeignOwnerDescendantRefuses()
-    print("16 policy checks passed")
+    t.testTextHelpers()
+    t.testPanelWithinEveryScreen()
+    print("17 policy checks passed")
     if CommandLine.arguments.contains("--socket-parity") {
       try socketParityChecks()
     } else if !CommandLine.arguments.contains("--policy-only") {
