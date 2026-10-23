@@ -152,11 +152,35 @@ public struct Workload: Identifiable, Sendable {
   public var section: Lane
   /// Advisory notes shown before stopping. They never block the action.
   public var cautions: [String]
-  /// A hard reason this workload cannot be signalled from DevPorts.
+  /// A hard reason this workload cannot be signalled from Bollard.
   public var blocked: String?
   public var launchdLabel: String?
-  public var usesMinecraftController = false
+  /// A declared controller script owns this workload; Stop signals it instead of the tree.
+  public var controller: ControllerScript?
+  /// Git branch or worktree of the project directory, when it is a checkout.
+  public var branch: String?
+  /// Who launched it: Claude Code, Codex, Terminal, launchd and so on. Drives the origin filter.
+  public var origin: String
   public var history: [Sample] = []
+  public init(
+    root: Proc, members: [Proc], excluded: [Proc], kind: Kind, name: String, listeners: [Listener],
+    provenance: String, origin: String, orphan: Bool, section: Lane, cautions: [String],
+    blocked: String?, launchdLabel: String?
+  ) {
+    self.root = root
+    self.members = members
+    self.excluded = excluded
+    self.kind = kind
+    self.name = name
+    self.listeners = listeners
+    self.provenance = provenance
+    self.origin = origin
+    self.orphan = orphan
+    self.section = section
+    self.cautions = cautions
+    self.blocked = blocked
+    self.launchdLabel = launchdLabel
+  }
   public var ports: [Int] { Array(Set(listeners.map(\.port))).sorted() }
   public var exposed: Bool { listeners.contains { $0.wildcard } }
   public var memory: UInt64 { members.reduce(0) { $0 + $1.memory } }

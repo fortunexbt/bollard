@@ -26,14 +26,13 @@ public enum Controller {
   public static func stop(_ w: Workload, _ signal: Signal = .terminate) throws -> Outcome {
     let live = try Native.snapshot()
     let targets = try Policy.validate(w, live: live)
-    if w.usesMinecraftController, signal != .kill {
-      // The audited controller sends Minecraft's console stop, waits for the world save,
-      // creates a backup, and cleans up its own helpers.
-      guard let root = live[w.root.pid], LocalControllers.isMinecraftController(root) else {
+    if let controller = w.controller, signal != .kill {
+      // The declared controller script shuts its service down on its own terms.
+      guard let root = live[w.root.pid], Controllers.match(root) == controller else {
         throw SafetyError("Controller changed since discovery.")
       }
       try Native.signal(root, SIGTERM)
-      let remaining = wait(for: targets, upTo: 60)
+      let remaining = wait(for: targets, upTo: controller.stopTimeout)
       return Outcome(signalled: [root], remaining: remaining)
     }
     return try deliver(signal, to: targets)

@@ -2,13 +2,13 @@
 import PackageDescription
 
 let package = Package(
-  name: "DevPorts", platforms: [.macOS(.v14)],
-  products: [.executable(name: "DevPorts", targets: ["DevPorts"])],
+  name: "Bollard", platforms: [.macOS(.v14)],
+  products: [.executable(name: "Bollard", targets: ["Bollard"])],
   targets: [
-    .target(name: "ProcessBridge"), .target(name: "DevPortsCore", dependencies: ["ProcessBridge"]),
-    .executableTarget(name: "DevPorts", dependencies: ["DevPortsCore"]),
-    .executableTarget(name: "DevPortsBench", dependencies: ["DevPortsCore"]),
+    .target(name: "ProcessBridge"), .target(name: "BollardCore", dependencies: ["ProcessBridge"]),
+    .executableTarget(name: "Bollard", dependencies: ["BollardCore"]),
+    .executableTarget(name: "BollardBench", dependencies: ["BollardCore"]),
     .executableTarget(
-      name: "DevPortsChecks", dependencies: ["DevPortsCore", "ProcessBridge"],
-      path: "Tests/DevPortsCoreTests"),
+      name: "BollardChecks", dependencies: ["BollardCore", "ProcessBridge"],
+      path: "Tests/BollardChecks"),
   ], swiftLanguageModes: [.v6])

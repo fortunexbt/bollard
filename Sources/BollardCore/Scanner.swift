@@ -111,6 +111,33 @@ public enum Native {
     }
     return groups.joined(separator: ":")
   }
+  /// Read-only lsof fallback, used only when the kernel socket table cannot be parsed.
+  public static func lsofListeners() throws -> [Listener] {
+    let text = try output("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpun"], timeout: 15)
+    var pid: Int32 = 0
+    var uid: UInt32 = 0
+    var result: [Listener] = []
+    for line in text.split(separator: "\n") {
+      switch line.first {
+      case "p": pid = Int32(line.dropFirst()) ?? 0
+      case "u": uid = UInt32(line.dropFirst()) ?? 0
+      case "n":
+        guard let colon = line.lastIndex(of: ":"),
+          let port = Int(line[line.index(after: colon)...]), pid > 0
+        else { continue }
+        let host = String(line[line.index(after: line.startIndex)..<colon])
+        let wildcard = host == "*"
+        result.append(
+          Listener(
+            port: port,
+            address: wildcard
+              ? "0.0.0.0" : host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+            wildcard: wildcard, pid: pid, uid: uid, socket: UInt64(pid) << 16 | UInt64(port)))
+      default: continue
+      }
+    }
+    return result
+  }
   public static func ownsSocket(_ pid: Int32, _ socket: UInt64) -> Bool {
     dp_owns_socket(pid, socket) == 1
   }
@@ -140,7 +167,9 @@ public enum Native {
     process.waitUntilExit()
     watchdog.cancel()
     let text = String(decoding: data, as: UTF8.self)
-    guard process.terminationStatus == 0 else {
+    guard
+      process.terminationStatus == 0 || (path.hasSuffix("lsof") && process.terminationStatus == 1)
+    else {
       let name = URL(fileURLWithPath: path).lastPathComponent
       let line =
         text.split(separator: "\n").last.map(String.init) ?? "exit \(process.terminationStatus)"
@@ -164,6 +193,7 @@ public struct Scan: Sendable {
   public var count: Int
   public var duration: Double
   public var date: Date
+  public var usedSocketFallback = false
 }
 
 /// Builds a process snapshot cheaply: one kernel call for the table, one for sockets, and
@@ -223,7 +253,15 @@ public final class Scanner {
       }
     }
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
-    let listeners = verify(try Native.listeners(), all)
+    var usedFallback = false
+    let listeners: [Listener]
+    do {
+      listeners = verify(try Native.listeners(), all)
+    } catch {
+      // A changed kernel socket-table layout must degrade, not blind the app.
+      listeners = try Native.lsofListeners()
+      usedFallback = true
+    }
     let elapsed = begin.timeIntervalSince(time)
     for (id, p) in all where p.uid == me {
       if let old = previous[id], old.identity == p.identity, old.parent != 1, p.parent == 1,
@@ -262,6 +300,7 @@ public final class Scanner {
         workloads[index].members[m] = p
         if p.pid == workloads[index].root.pid { workloads[index].root = p }
       }
+      workloads[index].branch = Git.branch(for: workloads[index].root.cwd)
       let w = workloads[index]
       var samples = history[w.id] ?? []
       samples.append(Sample(cpu: w.cpu, memory: w.memory))
@@ -279,7 +318,7 @@ public final class Scanner {
     time = begin
     return Scan(
       workloads: workloads, listeners: listeners, count: all.count,
-      duration: Date().timeIntervalSince(begin), date: Date())
+      duration: Date().timeIntervalSince(begin), date: Date(), usedSocketFallback: usedFallback)
   }
 
   /// The socket table names the last process that touched each socket. Confirm ownership through

@@ -2,7 +2,7 @@
 
 ## 2026-10-23 — kernel tables (2.0.0)
 
-`scan-2026-10-23.json` is `DevPortsBench` (release) on Fortune's Mac under a load average near 180 from other work. 501 processes, 14 listeners, 9 workloads, 15 samples.
+`scan-2026-10-23.json` is `BollardBench` (release) on Fortune's Mac under a load average near 180 from other work. 501 processes, 14 listeners, 9 workloads, 15 samples.
 
 | Stage | Median | p95 |
 |---|---:|---:|

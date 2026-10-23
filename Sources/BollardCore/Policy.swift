@@ -16,10 +16,10 @@ public enum Policy {
     "codex app-server", "resource-tracker", "multiprocessing.resource_tracker", "copilot",
   ]
 
-  /// Why a process is never signalled from DevPorts, or nil when it may be.
+  /// Why a process is never signalled from Bollard, or nil when it may be.
   public static func protection(_ p: Proc) -> String? {
     if p.pid <= 1 || p.base == "launchd" { return "launchd" }
-    if p.pid == getpid() { return "DevPorts itself" }
+    if p.pid == getpid() { return "Bollard itself" }
     if p.uid != getuid() { return "owned by another user" }
     let path = p.path.lowercased()
     if path.hasPrefix("/system/") || path.hasPrefix("/usr/libexec/") || path.hasPrefix("/usr/sbin/")
@@ -237,7 +237,8 @@ public enum Policy {
         result[p.identity] = Workload(
           root: p, members: [], excluded: [], kind: Kind(name: p.comm, icon: "lock", web: false),
           name: p.comm.isEmpty ? "PID \(p.pid)" : p.comm, listeners: own,
-          provenance: p.uid == 0 ? "root" : "user \(p.uid)", orphan: false, section: .system,
+          provenance: p.uid == 0 ? "root" : "user \(p.uid)", origin: "System", orphan: false,
+          section: .system,
           cautions: [], blocked: "Owned by another user.", launchdLabel: nil)
         continue
       }
@@ -248,9 +249,10 @@ public enum Policy {
         var row = Workload(
           root: p, members: [], excluded: [], kind: type,
           name: bundle(p, in: all).map(appName) ?? p.comm,
-          listeners: own, provenance: "", orphan: false,
+          listeners: own, provenance: "", origin: origin(of: p, in: all, labels: labels),
+          orphan: false,
           section: bundle(p, in: all) != nil && !p.path.hasPrefix("/System/") ? .apps : .system,
-          cautions: [], blocked: "DevPorts never quits \(reason).", launchdLabel: labels[p.pid])
+          cautions: [], blocked: "Bollard never quits \(reason).", launchdLabel: labels[p.pid])
         row.provenance = provenance(of: p, in: all, labels: labels)
         result[p.identity] = row
         continue
@@ -261,7 +263,8 @@ public enum Policy {
           root: p, members: [], excluded: [],
           kind: Kind(name: "Tool", icon: "wrench.and.screwdriver", web: false),
           name: URL(fileURLWithPath: p.cwd).lastPathComponent, listeners: own,
-          provenance: provenance(of: p, in: all, labels: labels), orphan: false, section: .system,
+          provenance: provenance(of: p, in: all, labels: labels),
+          origin: origin(of: p, in: all, labels: labels), orphan: false, section: .system,
           cautions: [],
           blocked: "A helper owned by an agent, editor or notebook. Stop it from its owner.",
           launchdLabel: labels[p.pid])
@@ -281,6 +284,7 @@ public enum Policy {
           kind: Kind(name: "App", icon: "app.dashed", web: true), name: appName(bundle),
           listeners: set.members.flatMap { byPid[$0.pid] ?? [] },
           provenance: provenance(of: root, in: all, labels: labels),
+          origin: origin(of: root, in: all, labels: labels),
           orphan: false, section: .apps, cautions: [], blocked: nil, launchdLabel: labels[root.pid])
         if let existing = result[root.identity] {
           row.listeners = existing.listeners + row.listeners
@@ -301,11 +305,7 @@ public enum Policy {
         seen.insert(parent.pid)
         root = parent
       }
-      if type.name == "Minecraft", let parent = all[root.parent],
-        LocalControllers.isMinecraftController(parent)
-      {
-        root = parent
-      }
+      if let parent = all[root.parent], Controllers.match(parent) != nil { root = parent }
       let set = killSet(root.pid, all, children: children)
       let memberListeners = Array(Set(set.members.flatMap { byPid[$0.pid] ?? [] })).sorted {
         ($0.port, $0.address) < ($1.port, $1.address)
@@ -339,20 +339,20 @@ public enum Policy {
       if set.members.contains(where: { $0.suspended }) {
         cautions.append("A suspended process will be resumed before it is stopped.")
       }
-      if type.name == "Minecraft", !LocalControllers.isMinecraftController(root) {
+      let controller = Controllers.match(root)
+      if type.name == "Minecraft", controller == nil {
         cautions.append("Stop lets the server save on shutdown. Force Quit skips saving.")
       }
       var row = Workload(
         root: root, members: set.members, excluded: set.excluded, kind: type,
         name: name.isEmpty || name == "/" ? type.name.lowercased() : name,
         listeners: memberListeners,
-        provenance: provenance(of: root, in: all, labels: labels), orphan: orphan,
+        provenance: provenance(of: root, in: all, labels: labels),
+        origin: origin(of: root, in: all, labels: labels), orphan: orphan,
         section: memberListeners.isEmpty ? .background : .servers, cautions: cautions, blocked: nil,
         launchdLabel: label)
-      row.usesMinecraftController = LocalControllers.isMinecraftController(root)
-      if row.usesMinecraftController {
-        row.provenance = "Minecraft controller · saves world and backs up"
-      }
+      row.controller = controller
+      if let controller { row.provenance = controller.label }
       if orphan { row.provenance = "Orphaned · observed parent exit" }
       if type.name == "Ollama" { row.name = "ollama" }
       if type.name == "Minecraft" {
@@ -381,6 +381,30 @@ public enum Policy {
       return nil
     }
     return outer
+  }
+  /// Coarse launcher identity for filtering: an agent name, an editor, Terminal, launchd or Detached.
+  static func origin(of root: Proc, in all: [Int32: Proc], labels: [Int32: String]) -> String {
+    if labels[root.pid] != nil { return "launchd" }
+    var ancestor = root.parent
+    var visited = Set<Int32>()
+    var shell = false
+    while let a = all[ancestor], visited.insert(ancestor).inserted {
+      if a.base.contains("codex") || a.path.has("ChatGPT.app") { return "Codex" }
+      if a.base == "claude" || a.argName == "claude" || a.path.has("/Claude.app/") {
+        return "Claude Code"
+      }
+      if a.named(agents) { return (agents.contains(a.base) ? a.base : a.argName).capitalized }
+      for (marker, name) in [
+        ("Visual Studio Code.app", "VS Code"), ("Zed.app", "Zed"), ("Cursor.app", "Cursor"),
+        ("Xcode.app", "Xcode"), ("Terminal.app", "Terminal"), ("iTerm.app", "iTerm"),
+        ("Ghostty.app", "Ghostty"), ("Warp.app", "Warp"),
+      ] where a.path.has(marker) {
+        return name
+      }
+      if shells.contains(a.base) { shell = true }
+      ancestor = a.parent
+    }
+    return shell ? "Terminal" : (root.parent == 1 ? "Detached" : "Other")
   }
   static func appName(_ bundle: String) -> String {
     String(URL(fileURLWithPath: bundle).lastPathComponent.dropLast(4))
@@ -424,13 +448,13 @@ public enum Policy {
   @discardableResult
   public static func validate(_ w: Workload, live: [Int32: Proc]) throws -> [Proc] {
     if let blocked = w.blocked { throw SafetyError(blocked) }
-    if w.usesMinecraftController && !LocalControllers.isMinecraftController(w.root) {
-      throw SafetyError("Audited Minecraft controller changed. Refusing to signal it.")
+    if w.controller != nil && Controllers.match(w.root) == nil {
+      throw SafetyError("The declared controller script changed. Refusing to signal it.")
     }
     guard let root = live[w.root.pid], root.identity == w.root.identity else {
       throw SafetyError("\(w.name) already exited or its PID was reused.")
     }
-    if let reason = protection(root) { throw SafetyError("DevPorts never quits \(reason).") }
+    if let reason = protection(root) { throw SafetyError("Bollard never quits \(reason).") }
     let current = killSet(root.pid, live).members
     // Members that exited are fine; a reused PID carries a new identity and is never signalled.
     for old in w.members {

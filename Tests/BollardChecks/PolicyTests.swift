@@ -1,6 +1,11 @@
+import BollardCore
 import CoreGraphics
-import DevPortsCore
+import CryptoKit
 import Foundation
+
+func sha256Text(_ s: String) -> String {
+  SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
+}
 
 struct PolicyTests {
   func p(
@@ -311,6 +316,80 @@ struct PolicyTests {
     check(memoryText(2_500_000_000) == "2.5 GB" && memoryText(12_000_000) == "12 MB", "memory")
     check("hello world".has("o w") && !"hello".has("") && !"abc".has("abd"), "byte search")
   }
+  func testGitBranchAndWorktree() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "bollard-git-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repo = root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(
+      at: repo.appendingPathComponent(".git/worktrees/feature"), withIntermediateDirectories: true)
+    try "ref: refs/heads/main\n".write(
+      to: repo.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
+    try FileManager.default.createDirectory(
+      at: repo.appendingPathComponent("src/deep"), withIntermediateDirectories: true)
+    check(
+      Git.read(repo.appendingPathComponent("src/deep").path) == "main", "branch from a subdirectory"
+    )
+    let worktree = root.appendingPathComponent("feature-wt")
+    try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+    try "gitdir: \(repo.path)/.git/worktrees/feature\n".write(
+      to: worktree.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+    try "ref: refs/heads/feature/login\n".write(
+      to: repo.appendingPathComponent(".git/worktrees/feature/HEAD"), atomically: true,
+      encoding: .utf8)
+    check(Git.read(worktree.path) == "feature/login · feature", Git.read(worktree.path) ?? "nil")
+    try "0123456789abcdef0123456789abcdef01234567\n".write(
+      to: repo.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
+    check(Git.read(repo.path) == "01234567", "detached HEAD shows a short sha")
+    check(Git.read(root.path) == nil, "no checkout, no branch")
+  }
+  func testDeclaredControllers() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "bollard-ctl-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let script = "print('stop')\n"
+    try script.write(
+      to: dir.appendingPathComponent("control.py"), atomically: true, encoding: .utf8)
+    let sha = "a0b1"  // wrong on purpose first
+    let config = dir.appendingPathComponent("controllers.json")
+    func write(_ hash: String) throws {
+      try """
+      {"controllers": [{"directory": "\(dir.path)", "script": "control.py", "sha256": "\(hash)", "label": "Test controller", "timeout": 5}]}
+      """.write(to: config, atomically: true, encoding: .utf8)
+    }
+    try write(sha)
+    Controllers.file = config
+    let proc = Proc(
+      pid: 70, parent: 10, path: "/opt/homebrew/bin/python3", cwd: dir.path,
+      args: ["python3", dir.appendingPathComponent("control.py").path, "run"])
+    check(Controllers.match(proc) == nil, "wrong fingerprint is not trusted")
+    let real = sha256Text(script)
+    Thread.sleep(forTimeInterval: 1.1)  // config mtime resolution
+    try write(real)
+    let matched = Controllers.match(proc)
+    check(
+      matched?.label == "Test controller" && matched?.stopTimeout == 5,
+      "matching fingerprint is trusted")
+    let shell = p(10, 1, "/bin/zsh", ["-zsh"])
+    let server = Proc(
+      pid: 71, parent: 70, path: "/usr/bin/java", cwd: dir.path,
+      args: ["java", "-jar", "server.jar", "nogui"])
+    let rows = Policy.workloads([10: shell, 70: proc, 71: server], listeners: [l(25565, 71)])
+    check(
+      rows.count == 1 && rows[0].root.pid == 70 && rows[0].controller != nil,
+      "server promotes to its controller")
+    check(
+      rows[0].provenance == "Test controller" && rows[0].cautions.isEmpty,
+      "\(rows[0].provenance) \(rows[0].cautions)")
+    try "print('changed')\n".write(
+      to: dir.appendingPathComponent("control.py"), atomically: true, encoding: .utf8)
+    var threw = false
+    do { try Policy.validate(rows[0], live: [10: shell, 70: proc, 71: server]) } catch {
+      threw = true
+    }
+    check(threw, "an edited controller script is refused")
+  }
   func testPanelWithinEveryScreen() {
     for screen in [
       CGRect(x: 0, y: 0, width: 1512, height: 945),
@@ -347,11 +426,14 @@ struct PolicyTests {
     try t.testLaunchOwnershipTransitions()
     t.testTextHelpers()
     t.testPanelWithinEveryScreen()
-    print("17 policy checks passed")
+    try t.testGitBranchAndWorktree()
+    try t.testDeclaredControllers()
+    print("19 policy checks passed")
     if CommandLine.arguments.contains("--socket-parity") {
       try socketParityChecks()
     } else if !CommandLine.arguments.contains("--policy-only") {
       try liveChecks()
+      try serviceChecks()
     }
   }
 }

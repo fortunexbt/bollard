@@ -1,76 +1,103 @@
-# DevPorts
+# Bollard
 
-A native macOS menu bar control panel for the servers and background workloads on this Mac. SwiftUI + AppKit, a small C bridge over Darwin's kernel tables, no runtime dependencies, no telemetry, no network requests, no privileged helper.
+Every server on your Mac, in the menu bar, with a Stop button that works.
 
-The installed application lives at `/Applications/DevPorts.app`. It has no Dock icon or standalone window; click its menu bar symbol to open the panel. The symbol's count is the number of dev servers, and it turns orange when one of them is reachable from the network. `devports` on the PATH is the same binary.
+Bollard is a native macOS menu bar app for people who run a lot of local servers, often started by coding agents they are not watching. It shows every TCP listener on the machine, names each one by project and git branch, says which agent or tool started it, and stops it with one click, a shortcut, a command, or a tool call from the agent itself. SwiftUI + AppKit, a small C bridge over Darwin's kernel tables, no runtime dependencies, no telemetry, no network requests, no privileged helper.
 
 ## What you see
 
-Every TCP listener on the machine is accounted for, grouped into four lanes:
+Four lanes, plus a Recent lane of servers you can bring back:
 
-- **Servers**: dev workloads with a listening port, named by project directory. Framework (Next.js, Vite, Uvicorn, Wrangler, llama.cpp and so on), ports as clickable chips, bound address, memory and CPU summed over the process tree, a CPU sparkline, uptime.
-- **Background**: watchers, workers, tunnels and plain scripts with no port. Orphans (whose launching parent was seen exiting) are marked.
-- **Apps**: GUI applications that listen, such as browsers or password managers. Helpers are merged into their application, and Quit goes through the application itself.
-- **System & tools**: root-owned or macOS daemons, plus helpers that belong to a coding agent, editor or notebook (MCP servers, language servers, kernels). Visible, never signalled from here.
+- **Servers**: dev workloads with a listening port, named by project directory. Framework, port chips, git branch or worktree, the launcher (Claude Code, Codex, Cursor, Terminal, launchd…), memory and CPU across the process tree, a CPU sparkline, uptime.
+- **Background**: watchers, workers, tunnels and scripts with no port. Orphans are marked.
+- **Apps**: GUI applications that listen. Helpers merge into their application; Quit goes through the app.
+- **System & tools**: macOS daemons, other users' ports, and helpers owned by an agent, editor or notebook (MCP servers, language servers, kernels). Visible, never signalled.
+- **Recent**: servers that went away, with Launch to run them again in Terminal with the same command and directory.
 
-A listener bound to `0.0.0.0` or `::` shows an antenna badge: it is reachable from other devices on your network.
+An antenna badge means the port is bound to all interfaces and reachable from your network; the menu bar icon turns orange when a dev server is.
+
+Pills under the search box filter by launcher. With a filter active, "Stop all" stops only that launcher's servers, so "everything Claude Code left running" is one menu item.
 
 ## Stopping things
 
-Hover a row for its Stop button; click it twice to confirm (⌥ for Force Quit). Right-click for every action. Expand a row for the command, directory, listeners, cautions, the process tree with per-process actions, and the buttons.
+Hover a row for Stop, click twice to confirm (⌥ for Force Quit). Right-click for everything. Expand a row for the command, directory, listeners, cautions, the process tree with per-process actions, and the buttons.
 
-- **Stop** sends SIGTERM to the workload's kill set and waits up to 4 s. If something survives, the row says so and offers Force Quit prominently.
+- **Stop** sends SIGTERM to the kill set and waits 4 s. Survivors are reported and Force Quit is offered.
 - **Force Quit** sends SIGKILL and waits 1.5 s.
-- **Interrupt** sends SIGINT, the same as Ctrl-C in a terminal.
-- **Restart** stops the workload and reruns the recorded command in a fresh Terminal window. It is unavailable when the command was rewritten, launchd owns the service, or the row is an application.
-- **Unload** removes a user launch agent with `launchctl bootout`; Homebrew services use `brew services stop` instead.
-- **Stop all servers** and **Force quit all servers** live in the ⋯ menu.
+- **Interrupt** sends SIGINT, like Ctrl-C.
+- **Restart** stops the workload, then reruns the recorded command in a fresh Terminal window.
+- **Unload** removes a user launch agent with `launchctl bootout`; Homebrew services use `brew services stop`.
+- **Stop all** and **Force quit all** in the ⋯ menu, scoped by the filter.
 
-Keyboard: ↑/↓ select, ⌘⌫ stop, ⌘⇧⌫ force quit, ⌘O open the first port, ⌘F search, ⌘R refresh, Esc close.
+Keyboard: ⌃⌥B opens the panel from anywhere, ↑/↓ select, ⌘⌫ stop, ⌘⇧⌫ force quit, ⌘O open the first port, ⌘P pin, ⌘F search, ⌘R refresh, Esc close.
 
-The kill set is the root's process tree minus protected processes and their subtrees. Protected means launchd, DevPorts itself, another user's process, macOS system paths, terminals and editors, coding agents (Claude Code, Codex, Aider, Hermes, Gemini, OpenCode), login and session processes, interactive shells, and game clients. Nothing else is refused. Instead a row carries cautions: a launchd label that may restart it, a parent that may respawn it, protected descendants that will be left running, a suspended process that will be resumed first, or a Minecraft server whose save is skipped by Force Quit.
+The kill set is the root's tree minus protected processes and their subtrees. Protected: launchd, Bollard itself, other users' processes, macOS system paths, terminals and editors, coding agents, login and session processes, interactive shells, game clients. Nothing else is refused; rows carry cautions instead (a launchd label that may restart it, a parent loop that may respawn it, protected descendants left running, a suspended process resumed first).
 
-Every signal goes through `proc_signal_with_audittoken` after re-reading the process's start time, unique id and generation, so a reused PID is never signalled. Before signalling, the live tree is re-derived: descendants spawned since the last scan are included, exited ones are skipped, and a changed command or owner aborts.
+Every signal goes through `proc_signal_with_audittoken` after re-reading start time, unique id and generation, so a reused PID is never signalled. The live tree is re-derived before signalling: new descendants are included, exited ones skipped, a changed command or owner aborts.
 
-The two PrismLauncher Minecraft controllers keep their audited integration: Stop signals the controller, which issues the console `stop`, waits for the world save and runs its backup. Force Quit bypasses it.
+## For agents
 
-## How discovery works
+`bollard --mcp` is a Model Context Protocol server over stdio with three tools: `list_servers`, `port_owner` and `stop_server`. Register it once and your agent can check what is on port 3000 and stop it without guessing at `lsof` and `kill`:
 
-Two kernel calls per scan: `KERN_PROC_ALL` for the whole process table and `net.inet.tcp.pcblist_n` for every TCP socket with its state, bound address and last owning PID. Executable path, arguments and process identity are read once per process generation and cached; only displayed workloads are sampled for memory and CPU. Socket ownership is confirmed through the owner's descriptors the first time a socket is seen, which repairs sockets inherited across a fork. Launchd labels are cached by process identity. Kernel exit notifications refresh ended workloads without waiting for the poll.
+```sh
+claude mcp add -s user bollard -- ~/.local/bin/bollard --mcp
+```
 
-The panel polls every 2 s while open and every 30 s while closed (slower on a quiet Mac). Memory is resident memory summed across the kill set; CPU is 100% per core.
+The ⋯ menu copies that command. "Copy for agent" on any row puts a Markdown summary (URL, PID, directory, branch, command, how to stop it) on the clipboard. "Claude Code here" and "Codex here" open a terminal in the project with the agent running.
 
 ## Command line
 
 ```sh
-devports --list                   # table of every lane
-devports --json                   # the same as JSON, for scripts and agents
-devports --stop <port|pid|name>   # SIGTERM, wait 4 s, exit 2 if still running
-devports --interrupt <target>     # SIGINT
-devports --kill <target>          # SIGKILL
-devports --login-status
+bollard                        # the app
+bollard --list [query]         # every lane, optionally filtered
+bollard 3000                   # who owns port 3000
+bollard --json [query]         # the same as JSON
+bollard --stop <port|pid|name> # SIGTERM, wait 4 s, exit 2 if still running
+bollard --interrupt <target>   # SIGINT
+bollard --kill <target>        # SIGKILL
+bollard --mcp                  # MCP server on stdio
 ```
 
-## Build and verification
+## Controller scripts
 
-Requires the Apple command-line Swift toolchain; Xcode is not needed.
+Some services should be stopped by a script of their own (a game server that saves and backs up, a database with a flush step). Declare it in `~/Library/Application Support/Bollard/controllers.json`:
+
+```json
+{"controllers": [{"directory": "~/servers/world", "script": "control.py", "sha256": "…", "label": "Saves and backs up", "timeout": 60}]}
+```
+
+A process running `python control.py run` in that directory becomes the workload's root; Stop signals the script and waits for it to finish. The script's SHA-256 must match, so an edited script loses the integration until you update the fingerprint.
+
+## How discovery works
+
+Two kernel calls per scan: `KERN_PROC_ALL` for the process table and `net.inet.tcp.pcblist_n` for every TCP socket with its state, bound address and last owning PID. Executable path, arguments and identity are read once per process generation. Socket ownership is confirmed through the owner's descriptors the first time a socket is seen. Only displayed workloads are sampled for memory and CPU. Branches come from `.git/HEAD`, no git binary. If the socket table cannot be parsed on some future macOS, Bollard falls back to lsof and says so in the footer.
+
+The panel polls every 2 s while open and every 30 s while closed. Steady-state scans take about 10 ms on a loaded machine; see `docs/performance/`.
+
+## Build
 
 ```sh
-./scripts/build.sh                                 # release build, signed app bundle in build/
-swift build --build-system native                  # debug targets
-.build/debug/DevPortsChecks --policy-only          # pure policy checks, touches nothing
-.build/debug/DevPortsChecks --socket-parity        # read-only comparison with lsof
-.build/debug/DevPortsChecks                        # creates three disposable servers and stops them
-.build/release/DevPortsBench                       # scan timings as JSON
+./scripts/build.sh      # universal (arm64 + x86_64), hardened runtime, build/Bollard.app
+./scripts/install.sh    # into /Applications, relaunch, ~/.local/bin/bollard
+./scripts/dmg.sh        # build/Bollard-<version>.dmg
+```
+
+Ad-hoc signed by default. Set `SIGN_IDENTITY` to a Developer ID certificate and `NOTARY_PROFILE` to a notarytool keychain profile to sign and notarize for distribution.
+
+Checks:
+
+```sh
+swift build --build-system native
+.build/debug/BollardChecks --policy-only     # pure policy, git and controller checks
+.build/debug/BollardChecks --socket-parity   # read-only comparison with lsof
+.build/debug/BollardChecks                   # disposable servers, a launch agent, an app bundle, stop all
+.build/release/BollardBench                  # scan timings as JSON
 swift format lint -r Sources Tests Package.swift
 ```
 
-The live checks start two Node HTTP servers and one Python server that ignores SIGTERM under a disposable shell, stop one, prove its sibling and the shell survive, show the stubborn one reported as still running, then force quit it. They never touch existing workloads. Measurements and the verification log are in `VERIFICATION.md` and `docs/performance/`.
+The live checks create their own fixtures and remove them, including on failure. They never touch existing workloads.
 
-## Sources and inspiration
+## Sources
 
-- [Original DevPorts changelog](https://devports.xyz/changelog): compact rows, protected agents, Jupyter distinctions, provenance, background processes.
-- [Apple XNU `in_pcb.h`, `socketvar.h`, `tcp_var.h`](https://github.com/apple-oss-distributions/xnu/tree/main/bsd): the `pcblist_n` socket table layout, also used by netstat.
+- [Apple XNU `in_pcb.h`, `socketvar.h`, `tcp_var.h`](https://github.com/apple-oss-distributions/xnu/tree/main/bsd): the `pcblist_n` socket table, also used by netstat.
 - [Apple Darwin process identity ABI](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info_private.h).
-
-This build is signed locally for personal use, not notarized for public distribution.
