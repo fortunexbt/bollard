@@ -21,6 +21,7 @@ final class MenuPanel: NSPanel {
   var outsideMonitor: Any?
   var keyMonitor: Any?
   var activationObserver: NSObjectProtocol?
+  var exposedTitle = false
   lazy var hotkey = Hotkey { [weak self] in self?.toggle() }
 
   func applicationDidFinishLaunching(_ note: Notification) {
@@ -103,10 +104,26 @@ final class MenuPanel: NSPanel {
     scheduleRefresh()
     if store.hotkeyEnabled { hotkey.register() } else { hotkey.unregister() }
     let servers = store.scan?.workloads.filter { $0.section == .servers } ?? []
+    // Never tint the button itself: a tint drops it out of the menu bar's vibrant rendering and
+    // it draws black. The template icon stays as is; only the count turns orange when a dev
+    // server is reachable from the network.
+    let exposed = servers.contains { $0.exposed }
     let title = servers.isEmpty ? "" : " \(servers.count)"
-    if item.button?.title != title { item.button?.title = title }
-    if let button = item.button {
-      button.contentTintColor = servers.contains { $0.exposed } ? .systemOrange : nil
+    if let button = item.button,
+      button.title != title || (button.attributedTitle.length > 0) != !title.isEmpty
+        || exposedTitle != exposed
+    {
+      exposedTitle = exposed
+      if title.isEmpty {
+        button.attributedTitle = NSAttributedString()
+      } else {
+        button.attributedTitle = NSAttributedString(
+          string: title,
+          attributes: [
+            .foregroundColor: exposed ? NSColor.systemOrange : NSColor.labelColor,
+            .font: NSFont.menuBarFont(ofSize: 0),
+          ])
+      }
     }
     guard store.visible, let button = item.button, let window = button.window,
       let screen = window.screen
