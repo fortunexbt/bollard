@@ -7,8 +7,12 @@ Every server on your Mac, in the menu bar, with a Stop button that works.
 ## Install
 
 ```sh
+brew trust --cask fortunexbt/tap/bollard
 brew install --cask fortunexbt/tap/bollard
 ```
+
+Homebrew 7 only loads formulae, casks and commands from official taps or taps
+you trust, so the first command is needed once per machine.
 
 Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications. The build is signed but not notarized, so the first launch needs a right-click → Open, or:
 
