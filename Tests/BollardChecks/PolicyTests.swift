@@ -429,6 +429,7 @@ struct PolicyTests {
     try t.testGitBranchAndWorktree()
     try t.testDeclaredControllers()
     portChecks()
+    try binaryChecks()
     print("19 policy checks passed")
     if !CommandLine.arguments.contains("--policy-only") {
       try ownListenerChecks()
