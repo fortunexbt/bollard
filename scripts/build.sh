@@ -1,13 +1,20 @@
 #!/bin/zsh
 # Builds a universal, hardened-runtime Bollard.app in build/.
-# Ad-hoc signed by default. Set SIGN_IDENTITY="Developer ID Application: …" to sign for
-# distribution, and NOTARY_PROFILE=<notarytool keychain profile> to notarize and staple.
+# Ad-hoc signed by default, which is enough to run locally and in CI.
+#
+# Release, from a clean checkout (one-time: xcrun notarytool store-credentials <profile> ...):
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=<profile> scripts/build.sh
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=<profile> scripts/dmg.sh
+# A Developer ID identity gets a secure timestamp, which notarization requires. Ad-hoc signing
+# cannot be timestamped. NOTARY_PROFILE zips the app, submits it with notarytool and staples the
+# ticket to the app. The app uses no JIT, no dlopen of unsigned code, no Apple events and no
+# network, so the hardened runtime needs no entitlements.
 set -euo pipefail
 cd "${0:A:h:h}"
 version=$(grep -m1 'let version = ' Sources/Bollard/CLI.swift | sed 's/.*"\(.*\)".*/\1/')
 build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 for arch in arm64 x86_64; do
-  swift build --build-system native -c release --product Bollard --triple "$arch-apple-macosx14.0"
+  swift build -c release --product Bollard --triple "$arch-apple-macosx14.0"
 done
 app="$PWD/build/Bollard.app"
 rm -rf "$app"
@@ -33,12 +40,19 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 xattr -cr "$app"
-codesign --force --options runtime --timestamp=none --sign "${SIGN_IDENTITY:--}" "$app"
+identity="${SIGN_IDENTITY:--}"
+timestamp=--timestamp
+[[ "$identity" == "-" ]] && timestamp=--timestamp=none
+codesign --force --options runtime "$timestamp" --sign "$identity" "$app"
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+  [[ "$identity" != "-" ]] || { echo "NOTARY_PROFILE needs SIGN_IDENTITY"; exit 1; }
   zip="build/Bollard-$version.zip"
+  rm -f "$zip"
   ditto -c -k --keepParent "$app" "$zip"
   xcrun notarytool submit "$zip" --keychain-profile "$NOTARY_PROFILE" --wait
+  rm -f "$zip"
   xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
 fi
 codesign --verify --deep --strict "$app"
 lipo -archs "$app/Contents/MacOS/Bollard"
