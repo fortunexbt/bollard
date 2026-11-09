@@ -82,3 +82,23 @@ Measured on macOS 27.2 (Darwin 27.2.0, build 26B123) with Xcode 27.2 (27B52, SDK
   - Not found or not checked in detail for macOS 27 are UserNotifications, SMAppService, Carbon `RegisterEventHotKey` and local network privacy. Bollard uses none of the first three in a way that changed, and it makes no network connections.
 - **Checked on this machine.** Full `.build/debug/BollardChecks` passes, including the own listener check and 132 parity comparisons. `Bollard --list` matches `lsof -nP -iTCP -sTCP:LISTEN`. `swift format lint -r Sources Tests Package.swift` is clean. Release `scripts/build.sh` succeeds and `lipo -archs` reports `x86_64 arm64`. `codesign -dv` shows `flags=0x10002(adhoc,runtime)` on a universal binary.
 - **Not verified.** Developer ID signing, notarytool submission and stapling were not run, by instruction, and were reviewed by reading only. Whether the kernel's empty table depends on signing or ancestry is unconfirmed. The CI runner may or may not receive the real table, so CI keeps `--policy-only`. The new 27 only APIs were not built because the target stays macOS 14.
+
+## Native Socket Walk, 2026-11-09
+
+- **Change.** `dp_listeners` still reads `net.inet.tcp.pcblist_n` first. When macOS returns only the header, it now walks every inspectable process with `proc_listallpids`, `PROC_PIDLISTFDS` and `PROC_PIDFDSOCKETINFO` and keeps TCP sockets in `TSI_S_LISTEN`, deduplicated by socket id. The `lsof` subprocess fallback, `listenersOrFallback` and `Scan.usedSocketFallback` are gone. There are no OS version checks, the choice follows what the kernel returns.
+- **Measured.** `BollardBench` release on this Mac, 705 processes, 9 listeners, 6 workloads, 15 samples. Before is two runs of the lsof build, after is the median of three runs. The after run is `docs/performance/scan-2026-11-09.json`.
+
+  | Stage | Before (lsof) | After (walk) |
+  |---|---:|---:|
+  | Socket table | 91.6 to 94.9 ms | 0.57 ms |
+  | Steady scan, median | 95.2 to 97.7 ms | 2.9 ms |
+  | Steady scan, p95 | 100.8 to 106.5 ms | 4.2 ms |
+  | First scan | 170 to 174 ms | 81 ms |
+
+- **Kept and lost against lsof.** Both see only listeners of processes this user can inspect, so root and other user listeners are invisible either way and nothing visible is lost. The walk now verifies each socket against its kernel id like the table path does. `lsof` remains only as the parity oracle in `BollardChecks`, which compares 108 listener results across 12 rounds.
+- **No scan cache.** The walk costs under 1 ms, and a cache would need invalidating on every socket open and close.
+- **Publish suppression not done.** `Store.refresh` replaces `scan` every time. `Scan` carries samples, duration and date, so it changes on every scan and an equality check would save nothing real.
+- **App level.** The bundled `build/Bollard.app` ran for 12 minutes with the panel closed under `caffeinate`. `top` reported 0.0 to 0.1 percent CPU and 0.0 to 0.1 power. Idle wakeups ranged from 11 to 28 across samples. Resident size sampled each minute stayed between 101 and 114 MB with no upward trend. Panel open was not measured because it needs UI interaction the owner and another agent share.
+- **Release script.** `scripts/build.sh` failed on this toolchain, which writes every triple into one product directory. It now copies each slice out per architecture before `lipo`.
+- **Checks.** `swift build` has zero warnings, the full `.build/debug/BollardChecks` passes and `swift format lint -r Sources Tests Package.swift` is clean. `scripts/build.sh` succeeds.
+- **Not verified.** Whether a Developer ID signed and notarized build receives the real `pcblist_n` table. The installed app is ad-hoc signed with no team identifier and signing with Developer ID was ruled out. The code handles both outcomes, using the table when it has records and the walk otherwise.
