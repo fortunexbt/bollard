@@ -207,7 +207,6 @@ struct Panel: View {
       Text(
         store.scan.map {
           "\($0.count) processes · \(String(format: "%.1f", $0.duration * 1000)) ms"
-            + ($0.usedSocketFallback ? " · lsof fallback" : "")
         } ?? "Reading your Mac…")
       Spacer()
       Text("⌘⌫ stop · ⌘⇧⌫ force · ⌘O open · ⌘P pin").foregroundStyle(.quaternary)

@@ -60,7 +60,7 @@ if flags.contains("--help") || flags.contains("-h") {
       if !rows.isEmpty { print(CLI.table(rows)) }
       print(
         "\(scan.count) processes · \(scan.listeners.count) listeners · \(String(format: "%.1f", scan.duration * 1000)) ms"
-          + (scan.usedSocketFallback ? " · lsof fallback" : ""))
+      )
     }
   } catch { fail(error.localizedDescription) }
 } else {

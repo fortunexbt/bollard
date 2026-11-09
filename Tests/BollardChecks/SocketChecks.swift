@@ -23,16 +23,15 @@ func ownListenerChecks() throws {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
   }
   let port = Int(UInt16(bigEndian: address.sin_port))
-  let (found, fallback) = try Native.listenersOrFallback()
+  let found = try Native.listeners()
   guard found.contains(where: { $0.pid == getpid() && $0.port == port }) else {
     throw SafetyError(
-      "Own listener on port \(port) missing from \(found.count) listeners (fallback: \(fallback))")
+      "Own listener on port \(port) missing from \(found.count) listeners")
   }
   let scanned = try Scanner().scan()
   guard scanned.listeners.contains(where: { $0.pid == getpid() && $0.port == port }) else {
     throw SafetyError("Own listener on port \(port) missing from the scan")
   }
-  print("Own listener found via \(fallback ? "lsof fallback" : "kernel socket table")")
 }
 
 /// Read-only comparison of the kernel socket table against lsof for this user's listeners.

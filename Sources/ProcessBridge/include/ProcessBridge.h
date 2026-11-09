@@ -33,6 +33,8 @@ typedef struct {
   uint64_t socket;  // kernel handle, stable for the socket's lifetime
   uint8_t address[16];
 } DPListener;
+// Listening TCP sockets. Reads the kernel socket table and, when macOS returns it empty, walks the
+// descriptors of every inspectable process instead. Returns the count or a negative errno.
 int dp_listeners(DPListener *buffer, int capacity);
 // 1 if the process holds a descriptor for the socket, 0 if not, negative errno if unreadable.
 int dp_owns_socket(int32_t pid, uint64_t socket);

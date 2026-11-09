@@ -105,7 +105,7 @@ struct dp_xtcpcb { uint32_t len, kind; uint64_t segq; int dupacks; int timer[4];
 #pragma pack()
 enum { DP_XSO_SOCKET = 0x1, DP_XSO_INPCB = 0x10, DP_XSO_TCPCB = 0x20, DP_TCPS_LISTEN = 1, DP_INP_IPV4 = 1 };
 
-int dp_listeners(DPListener *buffer, int capacity) {
+static int dp_kernel_listeners(DPListener *buffer, int capacity) {
   size_t size = 0;
   if (sysctlbyname("net.inet.tcp.pcblist_n", NULL, &size, NULL, 0) < 0) return -errno;
   size += size / 4 + 4096;
@@ -152,9 +152,76 @@ int dp_listeners(DPListener *buffer, int capacity) {
   free(data);
   // macOS 27 hands callers that are not platform binaries an empty table (header and trailer
   // only) with no error, and a changed record layout decodes nothing. Both look like zero
-  // listeners, so report them as failures and let the caller use another source.
+  // listeners, so report them as failures and let dp_listeners walk descriptors instead.
   if (advertised > 0 && decoded == 0) return -ENODATA;
   return count;
+}
+
+// Per-process walk over the descriptors this user can inspect. Used when the kernel table is
+// withheld. Processes the caller may not inspect (other users, platform daemons) are skipped, and
+// a socket shared by several processes is reported once, for the first process that holds it.
+static int dp_walk_listeners(DPListener *buffer, int capacity) {
+  int expected = proc_listallpids(NULL, 0);
+  if (expected <= 0) return -errno;
+  int bytes = (expected + 64) * (int)sizeof(pid_t);
+  pid_t *pids = malloc(bytes);
+  if (!pids) return -ENOMEM;
+  int n = proc_listallpids(pids, bytes);
+  if (n <= 0) { int e = errno; free(pids); return -e; }
+  struct proc_fdinfo *fds = NULL;
+  int fdcap = 0, count = 0;
+  for (int i = 0; i < n; i++) {
+    int needed = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, NULL, 0);
+    if (needed <= 0) continue;
+    if (needed + 64 * (int)sizeof(*fds) > fdcap) {
+      free(fds);
+      fdcap = needed + 64 * (int)sizeof(*fds);
+      fds = malloc(fdcap);
+      if (!fds) { free(pids); return -ENOMEM; }
+    }
+    int got = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, fds, fdcap);
+    uint32_t uid = 0;
+    int uid_known = 0;
+    for (int k = 0; k < got / (int)sizeof(*fds); k++) {
+      if (fds[k].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
+      struct socket_fdinfo info;
+      if (proc_pidfdinfo(pids[i], fds[k].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info)) != sizeof(info)) continue;
+      const struct socket_info *si = &info.psi;
+      if (si->soi_kind != SOCKINFO_TCP || si->soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
+      int duplicate = 0;
+      for (int j = 0; j < count && !duplicate; j++) duplicate = buffer[j].socket == si->soi_so;
+      if (duplicate) continue;
+      if (count >= capacity) { free(fds); free(pids); return -EOVERFLOW; }
+      if (!uid_known) {
+        struct proc_bsdinfo b;
+        if (proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &b, sizeof(b)) != sizeof(b)) break;
+        uid = b.pbi_uid;
+        uid_known = 1;
+      }
+      const struct in_sockinfo *in = &si->soi_proto.pri_tcp.tcpsi_ini;
+      DPListener *l = &buffer[count++];
+      memset(l, 0, sizeof(*l));
+      l->pid = pids[i];
+      l->uid = uid;
+      l->port = ntohs((uint16_t)in->insi_lport);
+      l->socket = si->soi_so;
+      const uint8_t *local = (const uint8_t *)&in->insi_laddr;
+      int length = (in->insi_vflag & INI_IPV4) ? 4 : 16;
+      l->family = length == 4 ? 4 : 6;
+      memcpy(l->address, local + (length == 4 ? 12 : 0), length);
+      uint8_t any = 0;
+      for (int b = 0; b < length; b++) any |= l->address[b];
+      l->wildcard = any == 0;
+    }
+  }
+  free(fds);
+  free(pids);
+  return count;
+}
+
+int dp_listeners(DPListener *buffer, int capacity) {
+  int count = dp_kernel_listeners(buffer, capacity);
+  return count >= 0 ? count : dp_walk_listeners(buffer, capacity);
 }
 
 int dp_owns_socket(int32_t pid, uint64_t socket) {

@@ -101,9 +101,9 @@ A process running `python control.py run` in that directory becomes the workload
 
 ## How discovery works
 
-Two kernel calls per scan: `KERN_PROC_ALL` for the process table and `net.inet.tcp.pcblist_n` for every TCP socket with its state, bound address and last owning PID. Executable path, arguments and identity are read once per process generation. Socket ownership is confirmed through the owner's descriptors the first time a socket is seen. Only displayed workloads are sampled for memory and CPU. Branches come from `.git/HEAD`, no git binary. If the socket table cannot be parsed on some future macOS, Bollard falls back to lsof and says so in the footer.
+Two reads per scan. `KERN_PROC_ALL` gives the process table. `net.inet.tcp.pcblist_n` gives every TCP socket with its state, bound address and last owning PID when the kernel returns it. macOS 27 returns an empty table to some callers, so in that case Bollard walks the descriptors of every process it can inspect and keeps the TCP sockets in LISTEN, which takes about 1 ms. Executable path, arguments and identity are read once per process generation. Socket ownership is confirmed through the owner's descriptors the first time a socket is seen. Only displayed workloads are sampled for memory and CPU. Branches come from `.git/HEAD`, no git binary.  Bollard never runs lsof. Like lsof, it sees the listeners of processes owned by your user, not root or other users.
 
-The panel polls every 2 s while open and every 30 s while closed. Steady-state scans take about 10 ms on a loaded machine; see `docs/performance/`.
+The panel scans every 4 s while open and every 120 s while closed when nothing is running, or every 2 s and 30 s while workloads are active. Steady-state scans take about 3 ms; see `docs/performance/`.
 
 ## Build from source
 
@@ -120,7 +120,7 @@ Checks:
 ```sh
 swift build --build-system native
 .build/debug/BollardChecks --policy-only     # pure policy, git and controller checks
-.build/debug/BollardChecks                   # socket table and lsof parity, disposable servers, a launch agent, an app bundle, stop all
+.build/debug/BollardChecks                   # socket table and lsof parity (lsof is only the test oracle), disposable servers, a launch agent, an app bundle, stop all
 .build/release/BollardBench                  # scan timings as JSON
 swift format lint -r Sources Tests Package.swift
 ```
