@@ -13,13 +13,19 @@ set -euo pipefail
 cd "${0:A:h:h}"
 version=$(grep -m1 'let version = ' Sources/Bollard/CLI.swift | sed 's/.*"\(.*\)".*/\1/')
 build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+bins=()
 for arch in arm64 x86_64; do
   swift build -c release --product Bollard --triple "$arch-apple-macosx14.0"
+  # Some toolchains write every triple to one product directory, so copy each slice out.
+  slice="$PWD/build/Bollard-$arch"
+  mkdir -p build
+  cp "$(swift build -c release --product Bollard --triple "$arch-apple-macosx14.0" --show-bin-path)/Bollard" "$slice"
+  bins+=("$slice")
 done
 app="$PWD/build/Bollard.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-lipo -create .build/arm64-apple-macosx/release/Bollard .build/x86_64-apple-macosx/release/Bollard -output "$app/Contents/MacOS/Bollard"
+lipo -create "${bins[@]}" -output "$app/Contents/MacOS/Bollard"
 cp Resources/Bollard.icns Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -43,6 +49,7 @@ xattr -cr "$app"
 identity="${SIGN_IDENTITY:--}"
 timestamp=--timestamp
 [[ "$identity" == "-" ]] && timestamp=--timestamp=none
+rm -f "${bins[@]}"
 codesign --force --options runtime "$timestamp" --sign "$identity" "$app"
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   [[ "$identity" != "-" ]] || { echo "NOTARY_PROFILE needs SIGN_IDENTITY"; exit 1; }
