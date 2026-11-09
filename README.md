@@ -59,11 +59,15 @@ Every signal goes through `proc_signal_with_audittoken` after re-reading start t
 
 ## For agents
 
-`bollard --mcp` is a Model Context Protocol server over stdio with three tools: `list_servers`, `port_owner` and `stop_server`. Register it once and your agent can check what is on port 3000 and stop it without guessing at `lsof` and `kill`:
+`bollard --mcp` is a Model Context Protocol server over stdio with five tools. `list_servers`, `port_owner` and `stop_server` find and stop things. `free_port` returns an unused port and `wait_for_port` blocks until a server is ready or gone, so an agent never sleeps and guesses. Register it once and your agent can check what is on port 3000 and stop it without guessing at `lsof` and `kill`:
 
 ```sh
 claude mcp add -s user bollard -- ~/.local/bin/bollard --mcp
 ```
+
+Every tool carries MCP annotations (read-only, destructive, idempotent), and the server speaks protocol 2025-06-18 and falls back to older versions a client asks for. `free_port` and `wait_for_port` probe sockets directly rather than the process list. They see listeners on loopback and wildcard addresses, not one bound only to a LAN address. `wait_for_port` waits at most 120 s.
+
+`bollard --json` is the stable shape. Each row includes `name`, `kind`, `section`, `pid`, `ports`, `listeners`, `provenance`, `origin`, `branch`, `directory`, `command`, `cautions`, `blocked`, `launchd` and `url`. `url` is `http://localhost:<port>` for web servers and `null` otherwise.
 
 The ⋯ menu copies that command. "Copy for agent" on any row puts a Markdown summary (URL, PID, directory, branch, command, how to stop it) on the clipboard. "Claude Code here" and "Codex here" open a terminal in the project with the agent running.
 
@@ -77,8 +81,13 @@ bollard --json [query]         # the same as JSON
 bollard --stop <port|pid|name> # SIGTERM, wait 4 s, exit 2 if still running
 bollard --interrupt <target>   # SIGINT
 bollard --kill <target>        # SIGKILL
+bollard --free-port [start]    # first free port from start (default 3000), exit 3 if none
+bollard --wait-port <port> [s] # wait until the port accepts connections, exit 2 on timeout
+bollard --wait-free <port> [s] # wait until the port can be bound again, exit 2 on timeout
 bollard --mcp                  # MCP server on stdio
 ```
+
+Exit codes are 0 for success, 1 for bad usage, 2 for still running or timed out, and 3 for nothing matched.
 
 ## Controller scripts
 

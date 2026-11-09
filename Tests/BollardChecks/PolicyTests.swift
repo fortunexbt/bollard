@@ -428,6 +428,7 @@ struct PolicyTests {
     t.testPanelWithinEveryScreen()
     try t.testGitBranchAndWorktree()
     try t.testDeclaredControllers()
+    portChecks()
     print("19 policy checks passed")
     if !CommandLine.arguments.contains("--policy-only") {
       try ownListenerChecks()

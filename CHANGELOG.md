@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0 (unreleased)
+
+- `bollard --free-port`, `--wait-port` and `--wait-free`, with matching `free_port` and `wait_for_port` MCP tools.
+- MCP tools carry read-only and destructive annotations, and the server negotiates protocol 2025-06-18.
+- JSON rows include a `url` for web servers.
+
 ## 2.1.0 — 2026-10-23
 
 Renamed from DevPorts to Bollard. Universal binary, hardened runtime, app icon, DMG and install scripts.
