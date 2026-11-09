@@ -114,9 +114,10 @@ int dp_listeners(DPListener *buffer, int capacity) {
   if (sysctlbyname("net.inet.tcp.pcblist_n", data, &size, NULL, 0) < 0) { int e = errno; free(data); return -e; }
   char *p = data, *end = data + size;
   if (size < sizeof(struct dp_xinpgen)) { free(data); return -EINVAL; }
-  p += ((struct dp_xinpgen *)data)->len;
+  const struct dp_xinpgen *head = (struct dp_xinpgen *)data;
+  p += head->len;
   struct dp_xinpcb *inp = NULL; struct dp_xsocket *so = NULL; struct dp_xtcpcb *tp = NULL;
-  int count = 0;
+  int count = 0, decoded = 0;
   while (p + sizeof(struct dp_xgen) <= end) {
     struct dp_xgen *g = (struct dp_xgen *)p;
     if (g->len < sizeof(struct dp_xgen) || p + g->len > end) break;
@@ -125,6 +126,7 @@ int dp_listeners(DPListener *buffer, int capacity) {
     else if (g->kind == DP_XSO_TCPCB && g->len >= sizeof(struct dp_xtcpcb)) tp = (struct dp_xtcpcb *)p;
     p += (g->len + 7) & ~7u;
     if (!(inp && so && tp)) continue;
+    decoded++;
     if (tp->state == DP_TCPS_LISTEN) {
       if (count >= capacity) { free(data); return -EOVERFLOW; }
       DPListener *l = &buffer[count++];
@@ -146,7 +148,12 @@ int dp_listeners(DPListener *buffer, int capacity) {
     }
     inp = NULL; so = NULL; tp = NULL;
   }
+  unsigned advertised = head->count;
   free(data);
+  // macOS 27 hands callers that are not platform binaries an empty table (header and trailer
+  // only) with no error, and a changed record layout decodes nothing. Both look like zero
+  // listeners, so report them as failures and let the caller use another source.
+  if (advertised > 0 && decoded == 0) return -ENODATA;
   return count;
 }
 

@@ -72,7 +72,7 @@ func liveChecks() throws {
   require(stopped.done && stopped.signalled.count == 1, "SIGTERM stops a node server")
   require(Native.read(b.root.pid)?.identity == b.id, "Sibling was touched")
   require(shell.isRunning, "Parent shell was touched")
-  let survivors = try Native.listeners()
+  let survivors = try Native.listenersOrFallback().listeners
   require(survivors.contains { $0.pid == b.root.pid }, "Sibling listener was lost")
   let ignored = try Controller.stop(python, .terminate)
   require(

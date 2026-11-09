@@ -37,7 +37,8 @@ public enum Native {
   }
   static func cwd(_ pid: Int32) -> String {
     var buffer = [CChar](repeating: 0, count: 4096)
-    return dp_cwd(pid, &buffer, Int32(buffer.count)) == 1 ? String(cString: buffer) : ""
+    guard dp_cwd(pid, &buffer, Int32(buffer.count)) == 1 else { return "" }
+    return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
   }
   static func usage(_ pid: Int32) -> (memory: UInt64, cpu: UInt64)? {
     var raw = DPUsage()
@@ -110,6 +111,12 @@ public enum Native {
       groups.append(String(value, radix: 16))
     }
     return groups.joined(separator: ":")
+  }
+  /// The kernel socket table, or lsof when the kernel withholds or reshapes it. macOS 27 returns an
+  /// empty table to callers that are not platform binaries, so a failed parse must degrade, not
+  /// report zero listeners.
+  public static func listenersOrFallback() throws -> (listeners: [Listener], fallback: Bool) {
+    do { return (try listeners(), false) } catch { return (try lsofListeners(), true) }
   }
   /// Read-only lsof fallback, used only when the kernel socket table cannot be parsed.
   public static func lsofListeners() throws -> [Listener] {
@@ -253,15 +260,8 @@ public final class Scanner {
       }
     }
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
-    var usedFallback = false
-    let listeners: [Listener]
-    do {
-      listeners = verify(try Native.listeners(), all)
-    } catch {
-      // A changed kernel socket-table layout must degrade, not blind the app.
-      listeners = try Native.lsofListeners()
-      usedFallback = true
-    }
+    let (found, usedFallback) = try Native.listenersOrFallback()
+    let listeners = usedFallback ? found : verify(found, all)
     let elapsed = begin.timeIntervalSince(time)
     for (id, p) in all where p.uid == me {
       if let old = previous[id], old.identity == p.identity, old.parent != 1, p.parent == 1,

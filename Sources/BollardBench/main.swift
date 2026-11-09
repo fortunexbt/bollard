@@ -27,7 +27,7 @@ for _ in 0..<15 {
   scans.append(full)
   let (_, table) = try measured { try Native.table() }
   tables.append(table)
-  let (listeners, socket) = try measured { try Native.listeners() }
+  let (listeners, socket) = try measured { try Native.listenersOrFallback().listeners }
   sockets.append(socket)
   let (all, snapshot) = try measured { try Native.snapshot() }
   snapshots.append(snapshot)

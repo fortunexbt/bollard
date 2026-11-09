@@ -1,6 +1,40 @@
 import BollardCore
 import Foundation
 
+/// Opens a listener in this process and requires the scanner's socket source to report it with
+/// this PID. A source that silently returns nothing, as macOS 27 does for the raw kernel table,
+/// fails here whatever lsof says.
+func ownListenerChecks() throws {
+  let fd = socket(AF_INET, SOCK_STREAM, 0)
+  guard fd >= 0 else { throw SafetyError("Could not create a socket.") }
+  defer { close(fd) }
+  var address = sockaddr_in()
+  address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+  address.sin_family = sa_family_t(AF_INET)
+  address.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
+  let bound = withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+    }
+  }
+  guard bound == 0, listen(fd, 1) == 0 else { throw SafetyError("Could not listen on loopback.") }
+  var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+  _ = withUnsafeMutablePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+  }
+  let port = Int(UInt16(bigEndian: address.sin_port))
+  let (found, fallback) = try Native.listenersOrFallback()
+  guard found.contains(where: { $0.pid == getpid() && $0.port == port }) else {
+    throw SafetyError(
+      "Own listener on port \(port) missing from \(found.count) listeners (fallback: \(fallback))")
+  }
+  let scanned = try Scanner().scan()
+  guard scanned.listeners.contains(where: { $0.pid == getpid() && $0.port == port }) else {
+    throw SafetyError("Own listener on port \(port) missing from the scan")
+  }
+  print("Own listener found via \(fallback ? "lsof fallback" : "kernel socket table")")
+}
+
 /// Read-only comparison of the kernel socket table against lsof for this user's listeners.
 /// Listeners come and go between snapshots, so each Bollard listener must appear in the lsof
 /// snapshot taken just before or just after it, and every port lsof saw both times must be present.

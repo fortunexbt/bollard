@@ -429,9 +429,9 @@ struct PolicyTests {
     try t.testGitBranchAndWorktree()
     try t.testDeclaredControllers()
     print("19 policy checks passed")
-    if CommandLine.arguments.contains("--socket-parity") {
+    if !CommandLine.arguments.contains("--policy-only") {
+      try ownListenerChecks()
       try socketParityChecks()
-    } else if !CommandLine.arguments.contains("--policy-only") {
       try liveChecks()
       try serviceChecks()
     }

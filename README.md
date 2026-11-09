@@ -111,8 +111,7 @@ Checks:
 ```sh
 swift build --build-system native
 .build/debug/BollardChecks --policy-only     # pure policy, git and controller checks
-.build/debug/BollardChecks --socket-parity   # read-only comparison with lsof
-.build/debug/BollardChecks                   # disposable servers, a launch agent, an app bundle, stop all
+.build/debug/BollardChecks                   # socket table and lsof parity, disposable servers, a launch agent, an app bundle, stop all
 .build/release/BollardBench                  # scan timings as JSON
 swift format lint -r Sources Tests Package.swift
 ```
