@@ -16,6 +16,7 @@ enum CLI {
       "directory": w.root.cwd,
       "command": w.root.command, "cautions": w.cautions, "blocked": w.blocked ?? NSNull(),
       "launchd": w.launchdLabel ?? NSNull(), "exposed": w.exposed, "orphan": w.orphan,
+      "url": w.kind.web ? w.ports.first.map { "http://localhost:\($0)" } ?? NSNull() : NSNull(),
     ]
   }
   /// Resolves a port, PID or project name to workloads that may be signalled.
@@ -91,6 +92,9 @@ enum CLI {
       bollard --stop <port|pid|name> SIGTERM, wait 4 s, exit 2 if still running
       bollard --interrupt <target>   SIGINT, like Ctrl-C
       bollard --kill <target>        SIGKILL
+      bollard --free-port [start]    first free port from start (default 3000), exit 3 if none
+      bollard --wait-port <port> [s] wait until the port accepts connections, exit 2 on timeout
+      bollard --wait-free <port> [s] wait until the port can be bound again, exit 2 on timeout
       bollard --mcp                  Model Context Protocol server on stdio, for coding agents
       bollard --login-status         launch-at-login state
     """

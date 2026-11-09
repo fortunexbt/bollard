@@ -19,6 +19,27 @@ if flags.contains("--help") || flags.contains("-h") {
   print(
     SMAppService.mainApp.status == .enabled
       ? "enabled" : "not enabled (status \(SMAppService.mainApp.status.rawValue))")
+} else if flags.contains("--free-port") {
+  guard let start = positional.first.map({ Int($0) }) ?? 3000, (1...65535).contains(start) else {
+    fail("Usage: bollard --free-port [start-port]")
+  }
+  guard let port = Ports.firstFree(from: start) else {
+    fail("No free port from \(start).", code: 3)
+  }
+  print(port)
+} else if let wait = ["--wait-port": true, "--wait-free": false].first(where: {
+  flags.contains($0.key)
+}) {
+  guard let port = positional.first.flatMap({ Int($0) }),
+    let seconds = positional.dropFirst().first.map({ Double($0) }) ?? 30, seconds >= 0
+  else { fail("Usage: bollard \(wait.key) <port> [seconds]") }
+  let reached = Ports.wait(for: port, listening: wait.value, timeout: seconds)
+  print(
+    reached
+      ? "Port \(port) is \(wait.value ? "accepting connections" : "free")."
+      : "Timed out after \(String(format: "%g", seconds)) s, port \(port) is not \(wait.value ? "accepting connections" : "free")."
+  )
+  exit(reached ? 0 : 2)
 } else if let action = ["--stop": Signal.terminate, "--interrupt": .interrupt, "--kill": .kill]
   .first(where: { flags.contains($0.key) })
 {
