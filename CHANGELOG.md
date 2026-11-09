@@ -5,6 +5,8 @@
 - `bollard --free-port`, `--wait-port` and `--wait-free`, with matching `free_port` and `wait_for_port` MCP tools.
 - MCP tools carry read-only and destructive annotations, and the server negotiates protocol 2025-06-18.
 - JSON rows include a `url` for web servers.
+- Apple silicon only. macOS 27 is the last release that runs Intel apps, so the x86_64 slice is gone.
+- macOS 27 hands non-system apps an empty kernel socket table; Bollard now reads each process's sockets directly instead, at about 3 ms a scan.
 
 ## 2.1.0 — 2026-10-23
 

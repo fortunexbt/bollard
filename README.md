@@ -20,7 +20,7 @@ Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexb
 xattr -dr com.apple.quarantine /Applications/Bollard.app
 ```
 
-Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 14 or later; the binary is universal.
+Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 14 or later on Apple silicon.
 
 To build from source: `./scripts/build.sh && ./scripts/install.sh` with the Xcode command-line tools.
 
@@ -108,7 +108,7 @@ The panel scans every 4 s while open and every 120 s while closed when nothing i
 ## Build from source
 
 ```sh
-./scripts/build.sh      # universal (arm64 + x86_64), hardened runtime, build/Bollard.app
+./scripts/build.sh      # Apple silicon, hardened runtime, build/Bollard.app
 ./scripts/install.sh    # into /Applications, relaunch, ~/.local/bin/bollard
 ./scripts/dmg.sh        # build/Bollard-<version>.dmg
 ```
