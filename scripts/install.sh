@@ -11,8 +11,6 @@ pkill -x Bollard 2>/dev/null || true
 sleep 0.5
 rm -rf /Applications/Bollard.app
 cp -R build/Bollard.app /Applications/Bollard.app
-xattr -cr /Applications/Bollard.app
-codesign --force --options runtime --sign "${SIGN_IDENTITY:--}" /Applications/Bollard.app 2>/dev/null
 codesign --verify --deep --strict /Applications/Bollard.app
 mkdir -p ~/.local/bin
 ln -sfn /Applications/Bollard.app/Contents/MacOS/Bollard ~/.local/bin/bollard

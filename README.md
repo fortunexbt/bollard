@@ -14,7 +14,7 @@ brew install --cask fortunexbt/tap/bollard
 Homebrew 7 only loads formulae, casks and commands from official taps or taps
 you trust, so the first command is needed once per machine.
 
-Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications.
+Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications. Releases are signed with a Developer ID and notarized.
 
 Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 26 or later on Apple silicon.
 

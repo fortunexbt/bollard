@@ -245,7 +245,7 @@ struct PolicyTests {
   }
   func testLaunchdJobs() {
     let home = NSHomeDirectory()
-    let all: [Int32: Proc] = [
+    var all: [Int32: Proc] = [
       80: p(
         80, 1, "/opt/homebrew/opt/postgresql@17/bin/postgres", ["postgres", "-D", "/data"],
         cwd: "/data"),
@@ -254,12 +254,18 @@ struct PolicyTests {
       83: p(83, 1, python, ["python3", "/Users/me/tools/relay.py"], cwd: "/"),
       84: p(84, 1, "/opt/bin/thing", ["thing"], cwd: "/"),
     ]
+    let xcode = "/Applications/Xcode.app/Contents/Developer"
+    all[85] = p(85, 1, "\(xcode)/usr/bin/ibtoold", ["ibtoold"], cwd: "/")
+    all[86] = p(
+      86, 1, "\(xcode)/usr/bin/python3", ["python3", "/Users/me/tools/sync.py"], cwd: "/")
     let labels: [Int32: String] = [
       80: "homebrew.mxcl.postgresql@17", 81: "com.openssh.ssh-agent", 83: "dev.me.relay",
-      84: "dev.me.thing",
+      84: "dev.me.thing", 86: "dev.me.sync",
     ]
     let rows = Policy.workloads(all, listeners: [l(5432, 80)], labels: labels)
-    check(rows.map(\.root.pid) == [80, 84, 83], "\(rows.map(\.root.pid))")
+    check(
+      rows.map(\.root.pid) == [80, 84, 83, 86],
+      "Apple's agents, vendor helpers and toolchain daemons are hidden: \(rows.map(\.root.pid))")
     let brew = row(rows, 80)!
     check(
       brew.kind.name == "PostgreSQL" && brew.brewService == "postgresql@17"
