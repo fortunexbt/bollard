@@ -1,104 +1,42 @@
-# Verification — 2026-10-04
+# Verification
 
-- Built native Apple Silicon release with the installed Swift command-line tools.
-- Standalone checks: 12 policy cases covering sibling/shell boundaries, hidden infrastructure and game clients, Minecraft/Jupyter/Ollama identification, watchers, protected descendants, detached ownership, PID reuse, changed parent generation, new descendants, and panel bounds across display sizes/origins.
-- Earlier live fixture run: two real Node HTTP servers; stale identity refused; selected fixture terminated; sibling listener and parent shell remained alive. Only task-owned temporary processes were controlled.
-- After the user requested no running ports be stopped, remaining tests were policy-only and all existing workloads remained read-only.
-- Live discovery observed both PrismLauncher Minecraft servers and Foreman services, while excluding Minecraft client listeners and Gradle/agent infrastructure. Counts change as other tasks start and stop their own processes.
-- Startup registration reports enabled. Actual login/reboot was not exercised.
-- Native interface inspected through accessibility and screenshots, including expanded Minecraft actions. Removed the temporary preview window after feedback. Final compact 480-point panel uses an explicitly bounded native NSPanel and the app remains an accessory with no Dock icon.
-- Swift formatting lint passes.
-- Initial review: the scope helper could not resolve an unborn repository against an empty-tree base; independent native safety review was used. Findings on parent generations, suspended processes, bundled Ollama, rewritten restart commands, protected app supervisors, and node-backed package-manager wrappers were addressed. Process-tree operations cannot serialize arbitrary simultaneous external signals/debugger actions.
+What was checked for 3.0.0 on 2026-11-18, macOS 27.2 (26B123), Xcode 27.2, Apple silicon. Earlier
+records are in the git history of this file.
 
-No production server shutdown, Minecraft world-save/backup cycle, or reboot was performed as a test.
+## Automated
 
-## Measured efficiency follow-up
+`swift build && .build/debug/BollardChecks` passes:
 
-- Swift 6 strict concurrency build, 16 pure policy checks, and 10 non-vacuous read-only native/lsof comparisons pass.
-- Paired scan medians: 183.86 ms before, 17.41 ms after (90.5% lower); see docs/performance/README.md for protocol and limits.
-- Menu sorting and persistence verified in the native UI, then restored to Name.
-- Login registration remains enabled. Existing workloads were not controlled.
+- 16 policy checks on synthetic process tables: discovery of unrecognised programs, the settle
+  time, program parsing and kinds, wrappers, agents and helpers, applications and helpers, terminal
+  sessions, launchd jobs, socket owners and origins, project names, kill-set validation, launchd
+  label caching, git checkouts, controller scripts and panel placement.
+- Port and binary checks: `--free-port`, `--wait-port`, MCP initialize, tool listing and calls
+  through the built binary.
+- 12 rounds of socket-walk against `lsof` parity, about 120 listener comparisons.
+- Live fixtures the checks create and remove: three servers, a stale identity refused, SIGTERM
+  stop, a SIGTERM-ignoring server reported then force quit, siblings untouched; a user launch
+  agent discovered, cautioned and unloaded; a scripted .app listed under Apps and force quit; stop
+  all across three servers.
 
-- Final review: seven independent lenses completed against the performance changes with no outstanding actionable findings. Receipt: `/tmp/compound-engineering-501/ce-code-review/20261004-013544-5f9d5ca7`.
-- Final installed 1.1.0 UI inspected visually: compact panel, correct ellipsis, two real services, current metrics. Signing verification passes.
-- Remaining coverage limits: no deterministic AppKit exit-observer/coalescing lifecycle test; native socket race/error branches lack targeted fault injection; benchmark measures total scan cost rather than isolating native socket cost. No long-duration energy/leak soak was performed.
+`swift format lint -r Sources Tests Package.swift` is clean.
 
-## Quiet-state follow-up — 1.1.1
+## By hand
 
-- Installed and visually verified a 320 × 106 point quiet panel on the actual empty workload scan. Accessibility tree contains no scroll area, search, zero counters, empty Background section, or diagnostics footer.
-- Quiet hidden discovery now runs every 120 seconds with 20 seconds timer tolerance (previously 30 seconds); opening the menu always requests an immediate scan. Quiet visible polling is 5 seconds; active workloads retain 3 seconds visible / 30 seconds hidden. Interval changes replace the timer only when necessary. New workloads may take up to the quiet polling interval plus timer tolerance to appear in the closed-menu badge.
-- Native release build and all 16 policy checks pass. App signing verifies and login registration reports enabled. No workload was signalled.
+- A lab of 13 processes started from a Claude Code shell: an HTTP server, a UDP listener, a
+  Unix-socket listener, an IPv6-only Node server, `python -c`, `node -e`, a bash loop, a compiled
+  binary, plain scripts, and two in a folder named `my-mcp-app`. 2.2.0 listed 7 of the 11 that
+  stayed up and showed the UDP and Unix-socket servers as portless scripts. 3.0.0 lists all 11,
+  each with what it runs, and attributes every one to Claude Code after its shell exited.
+- Every lab process was then stopped with `bollard --stop <port|pid>` from the release binary.
+- The panel was reviewed in dark and light appearance through the debug renderer
+  (`swift run Bollard --render out.png`) and on screen over Liquid Glass.
 
-## 2.0.0 — every process stoppable, kernel-table discovery — 2026-10-23
+## Not verified
 
-Measured on the development Mac while other agent work kept the load average between 160 and 190. The build shell runs at nice 5, so wall-clock figures from it are pessimistic; the kernel-call costs below are what the app itself pays.
-
-- The 1.1.1 build listed 14 workloads and refused to stop all 14 (reasons: parent shell, detached launcher, unreadable child metadata, supervisor). Those rules are gone. Only launchd, Bollard itself, other users' processes, macOS system paths, terminals, editors, coding agents, session processes, interactive shells and game clients stay protected, and they are excluded from kill sets rather than blocking them.
-- Discovery now uses `KERN_PROC_ALL` and `net.inet.tcp.pcblist_n` (one call each). On this Mac the socket table returned every listener with its owning PID, and the first-sight descriptor check confirmed all of them. Release bench, 15 steady scans over 501 processes and 14 listeners: process table 0.32 ms, socket table 0.22 ms, policy 7.5 ms, full steady scan 9.7 ms median (p95 15.5 ms); first scan 113 ms including `launchctl list`. Full distribution in `docs/performance/scan-2026-10-23.json`. The installed CLI's first `--list` over 470 processes took 162 ms of scan time.
-- Policy pass before the final string-search change was 1.0 s median on the same machine; libc `memmem` over the cached lowercased command line brought it to 7.5 ms.
-- 17 pure policy checks pass: sibling boundary, protected roots (agent, terminal, shell, editor), tools read-only, application helper merging, framework-embedded Python (system `/usr/bin/python3` resolves into Xcode.app and must not be treated as Xcode), browser helpers, system and foreign listeners, detached servers stoppable, launchd and Homebrew cautions, supervisor caution, npm/sh/tsx promotion, kill-set exclusion of protected descendants, Minecraft, background and AI kinds, validate() tracking live trees (new children joined, exited skipped, PID reuse and changed commands rejected), launch ownership cache transitions, text helpers, panel bounds.
-- Live checks pass (run three times): two Node servers and a Python server that ignores SIGTERM under one disposable `zsh -c`; stale identity rejected; SIGTERM stops a Node server while its sibling and shell survive; the SIGTERM-ignoring server is reported as still running after 4 s, then SIGKILL ends it; stopping an exited workload fails cleanly. Earlier crashed runs leaked fixtures because `defer` does not run on a precondition failure; the checks now clean up before every failure, and the leaked fixtures were removed with `bollard --kill <name>`.
-- Socket parity: 12 read-only snapshots, 158 listener comparisons against lsof, every Bollard listener matched an lsof PID in an adjacent snapshot and no twice-seen lsof port was missed.
-- Installed 2.0.0 to `/Applications/Bollard.app`, ad-hoc signature verifies after stripping Finder metadata from the copy. `~/.local/bin/bollard` symlinks the binary. Screenshot of the live panel: Servers with port chips, bound-address badge, memory highlight, hover Stop button; Background lane; footer scan time 13.6 ms.
-- Keyboard path verified on the installed app through System Events: ⌘F, type the disposable server's project name, ↓ selects the only row, ⌘⌫ stops it, and the server exited (`uikeys.sh`, fixture `python3 -m http.server 18422`). This found and fixed a real bug: arrow keys carry the function and numeric-pad modifier flags, so the exact empty-flag match never selected a row.
-- Accessibility: rows, stop buttons, port chips, search and section headers carry `accessibilityLabel`s. System Events reports the search field's label but no names for SwiftUI buttons inside this NSHostingView panel (the `More` menu button is the exception), so a click-by-name automation of Stop was not possible; VoiceOver was not tested.
-- Not exercised: Restart in Terminal, Unload via `launchctl bootout`, `brew services stop`, Quit of a GUI application, Stop all. These call the same validated paths or standard macOS APIs, but no existing workload was used to test them. Docker containers are not a data source (the daemon is not running here).
-
-## 2.1.0 — Bollard — 2026-10-23
-
-Renamed, moved to `~/Developer/Code/Repos/Bollard`, and taken from personal tool to product shape. Load average on this Mac fell from about 180 to the 60s during this pass, so figures are not comparable with 2.0.0's.
-
-- **Identity.** Universal binary (`lipo -archs`: x86_64 arm64), hardened runtime (`codesign -dv` flags: adhoc,runtime), bundle id `com.fortunexbt.bollard`, rendered icon (`scripts/render-icon.swift`), `scripts/build.sh` signs with `SIGN_IDENTITY` and notarizes with `NOTARY_PROFILE` when set, `scripts/dmg.sh`, `scripts/install.sh`. The Minecraft controller fingerprints left the code: `~/Library/Application Support/Bollard/controllers.json` declares them on this Mac and the matching test covers wrong fingerprint, right fingerprint, promotion and refusal after an edit.
-- **Checks.** 19 policy checks (git branch and worktree from HEAD files, declared controllers added). Live checks as before. New service checks, each with its own fixture and cleanup on failure: a user launch agent is discovered with its label and launchd caution, unloaded with `launchctl bootout`, its server exits and the label leaves `launchctl list`; a compiled listener inside a scripted `.app` bundle launched with `open` appears under Apps with the bundle's name, cannot restart from Terminal, and force quits; stop all ends three fixture servers in one call. Socket parity: 12 snapshots, 168 comparisons. Nothing leaked afterwards.
-- **UI on the installed build.** Keyboard path ⌘F, type, ↓, ⌘⌫ stopped a disposable server. Global shortcut ⌃⌥B opened the panel (System Events counted one window) and Esc closed it. Screenshot: origin pills, measured panel height, Recent and Background lanes, lsof-free footer at 4.6 ms. The notification permission banner appeared with the Bollard icon; authorization was left for the user, and the code treats denial as silence.
-- **MCP.** Piped JSON-RPC: initialize, tools/list (list_servers, port_owner, stop_server), port_owner and list_servers calls, and a -32601 for an unknown method. Registered at user scope: `claude mcp list` reports the server connected; Codex lists it enabled.
-- **CLI.** Installed `bollard --list` scans 622 processes in 85 ms; `bollard 3901` returns the owner of that port.
-- **Bench** (`docs/performance/scan-2026-10-23-v2.1.json`): process table 0.24 ms, socket table 0.19 ms, policy 2.6 ms, steady scan 4.0 ms median, p95 6.2 ms; first scan 91 ms with `launchctl list`.
-- **Not exercised:** Restart in Terminal and "Claude Code here" open Terminal windows and were not automated; `brew services stop` has no running service to test against; VoiceOver; Intel hardware (the x86_64 slice builds and links but ran only under Rosetta-free arm64). Docker is still not a data source.
-
-## 2.1.0 follow-ups — 2026-10-23, afternoon
-
-- **Menu bar icon drew black.** Tinting the status button with `contentTintColor` for the exposed-port state dropped it out of the menu bar's vibrant rendering on macOS 26. Only the count is coloured now, through an attributed title; the icon is a template image.
-- **Click on the icon sometimes did nothing.** Reproduced with System Events: with another app frontmost, a click opened the panel and it closed itself within a second. The os_log reasons added for this showed `close: another app activated` arriving 0.6 s after the open: the previously active app's activation notification landed late and closed the panel. Bollard no longer requests activation and no longer closes on activation notifications; it closes on outside clicks (ignoring clicks on the status item itself), Esc, the toggle and Space changes. A key-loss close was tried and removed because it reintroduced the same race at a longer delay. After the change, 8 of 8 frontmost-app clicks and 4 of 4 plain cycles opened and stayed open; every close reason in the log was a deliberate toggle or Esc (`bollard5.log` run). Stale builds muddied this investigation twice: a filtered build pipeline hid compile errors and the previous bundle was reinstalled. `scripts/install.sh` now refuses a bundle older than the sources, and build pipelines use `pipefail`.
-- **Glyph.** The menu bar glyph is a post with a mooring ring rendered from `scripts/render-menubar-icon.swift` (variant 8 of nine tried); the panel header uses the same template image in the accent colour.
-- **Polish.** Sparklines only with a visible peak (≥ 2% over the last 60 scans, scaled to the peak), ports without thousands separators, at most two chips with a tooltip for the rest, dashes instead of 0 MB on read-only rows, no "Detached" in subtitles, Recent entries pruned when their directory is gone, search and selection cleared on close, no Project menu on system rows.
-- Not re-verified after the last two cosmetic changes at the user's request to stop testing: the click suite was last run on the build before the glyph swap, and the glyph swap touched only resources and the header view.
-
-## macOS 27 Platform Pass
-
-Measured on macOS 27.2 (Darwin 27.2.0, build 26B123) with Xcode 27.2 (27B52, SDK 27.2), 2026-11-09.
-
-- **Root cause of the zero listeners.** `Bollard --list` printed "622 processes · 0 listeners" while `lsof` showed 7, and BollardChecks failed at LiveChecks.swift:62. On macOS 27.2 the `net.inet.tcp.pcblist_n` sysctl returns a 48 byte table (the xinpgen header and trailer with no records) to callers that are not platform binaries. The call succeeds with rc 0 and errno 0 whatever the buffer size, and the size probe still advertises about 14 KB. The old parser walked zero records and returned an empty list without an error, so the `lsof` fallback was never reached. Platform signed callers (`/usr/bin/python3`, `/usr/sbin/sysctl`) still get the full table in the same layout. Homebrew python3 got the 48 byte table. The BollardChecks binary once received the real table, so visibility appears to depend on the caller's signing or ancestry. That is observed, not documented, and Apple has not published it. Public reports of the same behaviour are mihomo #3355, pymobiledevice3 #2078, dotnet/runtime #133960, option-berth #165 and port-process-manager #11.
-- **Fix.** `dp_listeners` now returns `-ENODATA` when the header advertises sockets but none decode. `Native.listenersOrFallback()` catches any failure and uses `lsof`, with synthetic socket ids built from pid and port. `Scanner.scan()` uses it and skips the socket verification step on the fallback path, because there is no kernel record to verify against. `Native.cwd` also now returns an empty string when `dp_cwd` fails.
-- **Checks.** `ownListenerChecks` opens a loopback listener in the checker itself and fails unless both `listenersOrFallback()` and `Scanner().scan()` report it under this PID and port. `socketParityChecks` now runs in the default full run, does 12 rounds against `lsof`, and fails if nothing was compared. The `--socket-parity` flag is gone. A source that silently returns nothing can no longer pass.
-- **Build.** Zero warnings on `swift build`. `swift build --build-system native` is deprecated in 27.2 and the default build system handles `--triple`, so `scripts/build.sh` no longer passes it. `hdiutil create` is deprecated, so `scripts/dmg.sh` uses `diskutil image create from`, which produced a compressed UDZO image.
-- **Release scripts.** `scripts/build.sh` signs with the hardened runtime and a real `--timestamp` when `SIGN_IDENTITY` is a Developer ID, `--timestamp=none` when ad-hoc. With `NOTARY_PROFILE` it zips, submits with `notarytool`, staples and validates the app. `scripts/dmg.sh` signs the image with a timestamp, submits it, staples it and validates it. Both refuse `NOTARY_PROFILE` without `SIGN_IDENTITY`. The exact commands are in each script header. No entitlements are needed because the app has no JIT, no unsigned dlopen, no Apple events and no network.
-- **What the platform research found.**
-  - [PublicSpace](https://www.publicspace.net/blog/macos-27-menu-bar/) reports that macOS 27 draws the whole menu bar as one window, which broke third party managers such as Bartender and Ice. Bollard does not reparent or inspect the status item window, so nothing changed.
-  - [TokenBar PR #380](https://github.com/Nanako0129/TokenBar/pull/380) shows the 27 SDK adds `NSStatusItem.expandedInterfaceDelegate` and `NSStatusItemExpandedInterfaceSession`. They exist only in the 27 SDK and the target stays macOS 14, so they were not adopted.
-  - [Wails PR #5760](https://github.com/wailsapp/wails/pull/5760) found no new deprecations in a comparable AppKit layer.
-  - WWDC26 [Modernize your AppKit app](https://developer.apple.com/videos/play/wwdc2026/289/) covers scroll edge effects and glass. Bollard's panel already builds without warnings, so nothing was adopted.
-  - No new notarization requirement was found. The hardened runtime and a Developer ID timestamp are still required and DMGs can be stapled. These sources are third party guides and issues, for example [open-health-export #111](https://github.com/colinedwardwood/open-health-export/issues/111), not Apple documentation.
-  - Not found or not checked in detail for macOS 27 are UserNotifications, SMAppService, Carbon `RegisterEventHotKey` and local network privacy. Bollard uses none of the first three in a way that changed, and it makes no network connections.
-- **Checked on this machine.** Full `.build/debug/BollardChecks` passes, including the own listener check and 132 parity comparisons. `Bollard --list` matches `lsof -nP -iTCP -sTCP:LISTEN`. `swift format lint -r Sources Tests Package.swift` is clean. Release `scripts/build.sh` succeeds and `lipo -archs` reports `x86_64 arm64`. `codesign -dv` shows `flags=0x10002(adhoc,runtime)` on a universal binary.
-- **Not verified.** Developer ID signing, notarytool submission and stapling were not run, by instruction, and were reviewed by reading only. Whether the kernel's empty table depends on signing or ancestry is unconfirmed. The CI runner may or may not receive the real table, so CI keeps `--policy-only`. The new 27 only APIs were not built because the target stays macOS 14.
-
-## Native Socket Walk, 2026-11-09
-
-- **Change.** `dp_listeners` still reads `net.inet.tcp.pcblist_n` first. When macOS returns only the header, it now walks every inspectable process with `proc_listallpids`, `PROC_PIDLISTFDS` and `PROC_PIDFDSOCKETINFO` and keeps TCP sockets in `TSI_S_LISTEN`, deduplicated by socket id. The `lsof` subprocess fallback, `listenersOrFallback` and `Scan.usedSocketFallback` are gone. There are no OS version checks, the choice follows what the kernel returns.
-- **Measured.** `BollardBench` release on this Mac, 705 processes, 9 listeners, 6 workloads, 15 samples. Before is two runs of the lsof build, after is the median of three runs. The after run is `docs/performance/scan-2026-11-09.json`.
-
-  | Stage | Before (lsof) | After (walk) |
-  |---|---:|---:|
-  | Socket table | 91.6 to 94.9 ms | 0.57 ms |
-  | Steady scan, median | 95.2 to 97.7 ms | 2.9 ms |
-  | Steady scan, p95 | 100.8 to 106.5 ms | 4.2 ms |
-  | First scan | 170 to 174 ms | 81 ms |
-
-- **Kept and lost against lsof.** Both see only listeners of processes this user can inspect, so root and other user listeners are invisible either way and nothing visible is lost. The walk now verifies each socket against its kernel id like the table path does. `lsof` remains only as the parity oracle in `BollardChecks`, which compares 108 listener results across 12 rounds.
-- **No scan cache.** The walk costs under 1 ms, and a cache would need invalidating on every socket open and close.
-- **Publish suppression not done.** `Store.refresh` replaces `scan` every time. `Scan` carries samples, duration and date, so it changes on every scan and an equality check would save nothing real.
-- **App level.** The bundled `build/Bollard.app` ran for 12 minutes with the panel closed under `caffeinate`. `top` reported 0.0 to 0.1 percent CPU and 0.0 to 0.1 power. Idle wakeups ranged from 11 to 28 across samples. Resident size sampled each minute stayed between 101 and 114 MB with no upward trend. Panel open was not measured because it needs UI interaction the owner and another agent share.
-- **Release script.** `scripts/build.sh` failed on this toolchain, which writes every triple into one product directory. It now copies each slice out per architecture before `lipo`.
-- **Checks.** `swift build` has zero warnings, the full `.build/debug/BollardChecks` passes and `swift format lint -r Sources Tests Package.swift` is clean. `scripts/build.sh` succeeds.
-- **Not verified.** Whether a Developer ID signed and notarized build receives the real `pcblist_n` table. The installed app is ad-hoc signed with no team identifier and signing with Developer ID was ruled out. The code handles both outcomes, using the table when it has records and the walk otherwise.
+- VoiceOver, Increase Contrast and Reduce Transparency were not exercised.
+- Restart in Terminal, "Claude Code Here" and brew services were not exercised in this pass.
+- macOS 26 was not available to test on; the build targets it and uses no API newer than 26.
+- Root's and other users' sockets are invisible to the descriptor walk, as they are to `lsof`.
+  `port_owner` says so when a port is held by a process Bollard cannot inspect.
+- Policy runs once or twice per scan at about 6 ms each. It is not optimised further.

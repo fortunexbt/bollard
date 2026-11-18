@@ -44,7 +44,7 @@ struct RecentServer: Codable, Identifiable, Equatable {
   static func key(_ w: Workload) -> String { "\(w.root.cwd)\n\(w.root.path)" }
 
   func remember(_ w: Workload) {
-    guard w.section == .servers || w.section == .background, w.restartReason == nil,
+    guard w.section == .servers, w.restartReason == nil,
       !w.root.cwd.isEmpty
     else { return }
     let entry = RecentServer(

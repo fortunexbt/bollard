@@ -1,5 +1,19 @@
 # Discovery performance
 
+## 2026-11-18 structural discovery (3.0.0)
+
+`scan-2026-11-18.json` is `BollardBench` (release) on macOS 27.2 with 788 processes, 25 sockets and 14 workloads, 15 samples.
+
+| Stage | Median | p95 |
+|---|---:|---:|
+| Steady scan | 9.1 ms | 9.9 ms |
+| Process table | 0.16 ms | 0.28 ms |
+| Socket walk (TCP, UDP, Unix) | 1.5 ms | 1.7 ms |
+| Policy | 6.0 ms | 6.2 ms |
+| First scan, including `launchctl list` | 111 ms | |
+
+The steady scan is slower than 2.2.0's 2.9 ms because policy now gives every process of the user's a role and parses command lines, and because more is shown and sampled. The earlier figures below describe 2.2.0, which read the kernel socket table when it could; that path is gone.
+
 ## 2026-11-09 native socket walk (2.2.0)
 
 On macOS 27.2 the kernel returns an empty `pcblist_n` table to callers that are not platform binaries, so 2.2.0 spent about 92 ms of every scan spawning `lsof`. The scanner now reads the table when it has records and otherwise walks `proc_listallpids`, `PROC_PIDLISTFDS` and `PROC_PIDFDSOCKETINFO` in the C bridge, keeping TCP sockets in LISTEN. `lsof` is gone from the product and remains only as the oracle in the parity checks.

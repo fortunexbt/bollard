@@ -1,12 +1,22 @@
 # Changelog
 
-## 2.2.0 (unreleased)
+## 3.0.0 — 2026-11-18
 
-- `bollard --free-port`, `--wait-port` and `--wait-free`, with matching `free_port` and `wait_for_port` MCP tools.
-- MCP tools carry read-only and destructive annotations, and the server negotiates protocol 2025-06-18.
-- JSON rows include a `url` for web servers.
-- Apple silicon only. macOS 27 is the last release that runs Intel apps, so the x86_64 slice is gone.
-- macOS 27 hands non-system apps an empty kernel socket table; Bollard now reads each process's sockets directly instead, at about 3 ms a scan.
+Discovery, the panel and the platform floor are new. Needs macOS 26 or later.
+
+- Every long-lived process tree of yours is a workload. 2.x listed a process without a port only when it matched a list of known programs, so `python -c`, `node -e`, shell loops and compiled binaries never appeared. Roles (macOS, application, agent, terminal session, yours) now come from structure, and recognising the program only improves the label.
+- Programs are named from parsed command lines: interpreters, package runners and rewritten process titles are looked through, and nothing matches on a substring. A project in `~/invite-app` is no longer Vite.
+- Rows are named by repository, with what they run beside the name, so six workloads in one project are six different rows.
+- Agents lane: each coding-agent session with the helpers it started, such as MCP servers. Ending one leaves the servers it launched running.
+- UDP ports and Unix-domain sockets.
+- A server that outlives its shell or agent still says who started it, from macOS's responsible-process record.
+- Sockets come from a descriptor walk only. macOS 27 withholds the kernel socket table from apps, so the table parser is gone.
+- The scanner notices exec, so a process that replaces itself is relabelled and can still be stopped.
+- New panel on Liquid Glass: search first, launcher filters, application icons, family colours, one expanded row at a time with the command, folder, listeners, process tree and actions.
+- New icon and menu bar glyph, a layered icon for the dark, clear and tinted looks, and a drag-to-install disk image.
+- `bollard --free-port`, `--wait-port` and `--wait-free`, with matching `free_port` and `wait_for_port` MCP tools. MCP tools carry read-only and destructive annotations.
+- JSON rows add `runs`, `sockets`, a `transport` per listener and a `url` for web servers.
+- Apple silicon only.
 
 ## 2.1.0 — 2026-10-23
 

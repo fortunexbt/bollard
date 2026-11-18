@@ -12,7 +12,7 @@ enum MCPServer {
       [
         "name": "list_servers",
         "description":
-          "List dev servers, background workloads, listening apps and system ports on this Mac, with ports, PIDs, directories, git branches, the agent or tool that started each one, and cautions. Optional query filters by name, port, PID, framework, branch or origin.",
+          "List everything left running on this Mac: dev servers, background jobs and scripts, coding-agent sessions with their helpers, listening apps and system ports. Each has its project, what it runs, ports and sockets, PIDs, directory, git branch, the agent or tool that started it, and cautions. Optional query filters by name, command, port, PID, kind, branch or origin.",
         "annotations": [
           "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true,
           "openWorldHint": false,
@@ -180,7 +180,7 @@ enum MCPServer {
           default: return .terminate
           }
         }()
-        let result = CLI.stop(target, signal, in: scan)
+        let result = CLI.stop(target, signal, in: scan, agents: false)
         return text(result.report.joined(separator: "\n"), error: !result.found)
       default:
         return text("Unknown tool \(name)", error: true)

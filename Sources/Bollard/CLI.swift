@@ -1,7 +1,7 @@
 import BollardCore
 import Foundation
 
-let version = "2.1.0"
+let version = "3.0.0"
 
 enum CLI {
   static func describe(_ w: Workload) -> [String: Any] {
@@ -58,7 +58,8 @@ enum CLI {
     return String(decoding: data, as: UTF8.self)
   }
   /// Signals matching workloads; returns a report and whether anything is still running.
-  static func stop(_ argument: String, _ signal: Signal, in scan: Scan) -> (
+  /// `agents` is false for the MCP server: one agent never ends another agent's session.
+  static func stop(_ argument: String, _ signal: Signal, in scan: Scan, agents: Bool = true) -> (
     report: [String], stillRunning: Bool, found: Bool
   ) {
     let matches = targets(argument, in: scan)
@@ -66,6 +67,12 @@ enum CLI {
     var report: [String] = []
     var stillRunning = false
     for w in matches {
+      if w.section == .agents, !agents {
+        report.append(
+          "\(w.name) (PID \(w.root.pid)) is an agent session. Bollard's MCP server never ends one.")
+        stillRunning = true
+        continue
+      }
       if let blocked = w.blocked {
         report.append("\(w.name) (PID \(w.root.pid)): \(blocked)")
         stillRunning = true
@@ -91,7 +98,7 @@ enum CLI {
     return (report, stillRunning, true)
   }
   static let help = """
-    Bollard \(version) — servers and background workloads on this Mac
+    Bollard \(version) — servers, background jobs and agents running on this Mac
       bollard                        run the menu bar app
       bollard --list [query]         table of every lane, optionally filtered
       bollard --json [query]         the same as JSON, for scripts and agents

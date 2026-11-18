@@ -1,6 +1,5 @@
 import AppKit
 import BollardCore
-import Combine
 import ServiceManagement
 import SwiftUI
 import os
@@ -18,7 +17,6 @@ final class MenuPanel: NSPanel {
   var item: NSStatusItem!
   var timer: Timer?
   var refreshInterval: TimeInterval?
-  var observation: AnyCancellable?
   var outsideMonitor: Any?
   var keyMonitor: Any?
   var exposedTitle = false
@@ -40,27 +38,11 @@ final class MenuPanel: NSPanel {
     panel.hasShadow = true
     panel.hidesOnDeactivate = false
     panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-    let material = NSVisualEffectView()
-    material.material = .popover
-    material.blendingMode = .behindWindow
-    material.state = .active
-    material.wantsLayer = true
-    material.layer?.cornerRadius = 14
-    material.layer?.masksToBounds = true
-    let host = NSHostingView(rootView: Panel(store: store))
-    host.sizingOptions = []
-    host.translatesAutoresizingMaskIntoConstraints = false
-    material.addSubview(host)
-    NSLayoutConstraint.activate([
-      host.leadingAnchor.constraint(equalTo: material.leadingAnchor),
-      host.trailingAnchor.constraint(equalTo: material.trailingAnchor),
-      host.topAnchor.constraint(equalTo: material.topAnchor),
-      host.bottomAnchor.constraint(equalTo: material.bottomAnchor),
-    ])
-    panel.contentView = material
-    observation = store.objectWillChange.sink { [weak self] in
-      DispatchQueue.main.async { self?.updatePanel() }
-    }
+    let glass = NSGlassEffectView()
+    glass.cornerRadius = Theme.radius
+    glass.contentView = NSHostingView(rootView: Panel(store: store))
+    panel.contentView = glass
+    observe()
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
       guard let self, panel.isVisible else { return event }
       if event.keyCode == 53 {
@@ -97,17 +79,24 @@ final class MenuPanel: NSPanel {
   }
   /// The bollard glyph as a template image, so it follows the menu bar's colours.
   static var menuBarIcon: NSImage? {
-    if let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
+    guard let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "pdf"),
       let image = NSImage(contentsOf: url)
-    {
-      image.isTemplate = true
-      image.size = NSSize(width: 18, height: 18)
-      image.accessibilityDescription = "Bollard"
-      return image
+    else { return nil }
+    image.isTemplate = true
+    image.size = NSSize(width: 18, height: 18)
+    image.accessibilityDescription = "Bollard"
+    return image
+  }
+  /// Follows everything the status item and the panel's frame are derived from.
+  func observe() {
+    withObservationTracking {
+      _ = (store.scan?.date, store.desiredHeight, store.visible, store.hotkeyEnabled)
+    } onChange: { [weak self] in
+      Task { @MainActor in
+        self?.updatePanel()
+        self?.observe()
+      }
     }
-    return NSImage(
-      systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: "Bollard"
-    )
   }
   func updatePanel() {
     scheduleRefresh()
@@ -138,13 +127,10 @@ final class MenuPanel: NSPanel {
       let screen = window.screen
     else { return }
     let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
-    // Content measures itself; fall back to a rough estimate before the first layout.
-    var desired: Double = store.chromeHeight + store.listHeight + 32
-    if store.listHeight == 0 { desired = 196 + Double(max(store.visibleRows.count, 1)) * 50 }
+    // Content measures itself; before the first layout, open at a plausible size.
     let frame = PanelPlacement.frame(
       anchor: anchor, screen: screen.visibleFrame,
-      desiredHeight: store.compact ? store.chromeHeight + 4 : desired,
-      desiredWidth: store.compact ? 320 : 500)
+      desiredHeight: store.listHeight == 0 ? 320 : store.desiredHeight, desiredWidth: Theme.width)
     if abs(panel.frame.height - frame.height) > 1 || abs(panel.frame.minX - frame.minX) > 1
       || abs(panel.frame.width - frame.width) > 1
     {
@@ -165,6 +151,7 @@ final class MenuPanel: NSPanel {
     } else {
       if panel.isVisible { panel.orderOut(nil) }
       store.visible = true
+      store.opened += 1
       scheduleRefresh()
       store.refresh()
       updatePanel()

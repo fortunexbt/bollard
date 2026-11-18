@@ -2,9 +2,29 @@ import AppKit
 import BollardCore
 import SwiftUI
 
-/// Everything a right-click offers. Also reused by the detail buttons.
+struct Sparkline: View {
+  var samples: [Double]
+  var body: some View {
+    Canvas { context, size in
+      guard samples.count > 1 else { return }
+      let top = max(25, samples.max() ?? 0)
+      var path = Path()
+      for (i, v) in samples.enumerated() {
+        let point = CGPoint(
+          x: size.width * Double(i) / Double(samples.count - 1),
+          y: size.height - (size.height - 1) * min(1, v / top))
+        if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
+      }
+      context.stroke(
+        path, with: .style(.tint),
+        style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+    }
+  }
+}
+
+/// Everything a right-click offers, and the detail view's overflow menu.
 struct WorkloadMenu: View {
-  @ObservedObject var store: Store
+  var store: Store
   var w: Workload
   var body: some View {
     if w.blocked == nil {
@@ -19,201 +39,181 @@ struct WorkloadMenu: View {
       if w.restartReason == nil { Button("Restart in Terminal") { store.restart(w) } }
       Divider()
     }
-    ForEach(w.ports, id: \.self) { port in
+    ForEach(w.tcpPorts, id: \.self) { port in
       Button("Open localhost:\(String(port))") { store.open(port: port) }
     }
-    if !w.root.cwd.isEmpty {
-      Menu("Open project in") {
-        Button("Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: w.root.cwd)) }
+    if place {
+      Menu("Open Project In") {
+        Button("Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: w.lead.cwd)) }
         ForEach(Launcher.editors, id: \.self) { name in
-          Button(name) { Launcher.openIn(name, w.root.cwd) }
+          Button(name) { Launcher.openIn(name, w.lead.cwd) }
         }
         Divider()
         ForEach(Launcher.agents, id: \.path) { agent in
-          Button("\(agent.name) here") { store.agentHere(agent.path, w) }
+          Button("\(agent.name) Here") { store.agentHere(agent.path, w) }
         }
       }
     }
     Divider()
-    Button(store.pinned(w) ? "Unpin" : "Pin to top") { store.togglePin(w) }
+    Button(store.pinned(w) ? "Unpin" : "Pin to Top") { store.togglePin(w) }
     Button("Rename…") { store.beginRename(w) }
     Divider()
-    Button("Copy for agent") {
+    Button("Copy for Agent") {
       store.copy(
         Launcher.agentContext(w, displayName: store.name(w)),
         note: "Summary copied. Paste it into your agent.")
     }
-    if !w.root.command.isEmpty { Button("Copy command") { store.copy(w.root.command) } }
-    if !w.root.cwd.isEmpty { Button("Copy directory") { store.copy(w.root.cwd) } }
-    if !w.ports.isEmpty {
-      Button("Copy URL") { store.copy("http://localhost:\(w.ports[0])") }
-      Button("Copy curl") { store.copy("curl -i http://localhost:\(w.ports[0])/") }
+    if !w.lead.command.isEmpty { Button("Copy Command") { store.copy(w.lead.command) } }
+    if place { Button("Copy Directory") { store.copy(w.lead.cwd) } }
+    if let url = w.url {
+      Button("Copy URL") { store.copy(url.absoluteString) }
+      Button("Copy curl") { store.copy("curl -i \(url.absoluteString)/") }
     }
     Button("Copy PID") { store.copy("\(w.root.pid)") }
     if !w.members.isEmpty {
-      Button("Copy kill command") {
+      Button("Copy kill Command") {
         store.copy("kill \(w.members.map { "\($0.pid)" }.joined(separator: " "))")
       }
     }
   }
+  private var place: Bool { !w.lead.cwd.isEmpty && w.lead.cwd != "/" && w.section != .system }
 }
 
+/// The expanded half of a row: what it is, where it listens, what it is made of, what to do.
 struct Detail: View {
-  @ObservedObject var store: Store
+  @Bindable var store: Store
   var w: Workload
   @FocusState private var renameFocused: Bool
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Divider()
-      if store.renaming == w.id {
-        HStack {
-          TextField("Display name", text: $store.renameText).textFieldStyle(.roundedBorder).font(
-            .system(size: 11)
-          )
-          .focused($renameFocused).onSubmit { store.commitRename(w) }.accessibilityLabel(
-            "Display name")
-          Button("Save") { store.commitRename(w) }.controlSize(.small).keyboardShortcut(
-            .defaultAction)
-          Button("Cancel") { store.renaming = nil }.controlSize(.small)
-        }.onAppear { renameFocused = true }
+      if store.renaming == w.id { rename }
+      if !w.lead.command.isEmpty {
+        Text(command).font(.system(size: 11, design: .monospaced)).lineLimit(4)
+          .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+          .background(.fill.quaternary, in: .rect(cornerRadius: 7))
       }
-      HStack {
-        Label(
-          w.provenance, systemImage: w.orphan ? "exclamationmark.circle" : "arrow.turn.down.right")
-        Spacer()
-        Text("PID \(w.root.pid) · \(w.members.count) process\(w.members.count == 1 ? "" : "es")")
-      }.font(.system(size: 10)).foregroundStyle(.secondary)
-      if !w.root.cwd.isEmpty {
-        HStack(spacing: 6) {
-          Text(w.root.cwd).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-            .textSelection(.enabled).lineLimit(2)
-          if let branch = w.branch {
-            Label(branch, systemImage: "arrow.triangle.branch").font(.system(size: 10))
-              .foregroundStyle(.secondary).lineLimit(1)
+      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 5) {
+        if !w.lead.cwd.isEmpty, w.lead.cwd != "/" {
+          fact("Folder") {
+            Button {
+              NSWorkspace.shared.open(URL(fileURLWithPath: w.lead.cwd))
+            } label: {
+              Text(abbreviated(w.lead.cwd)).lineLimit(1).truncationMode(.head)
+            }.buttonStyle(.link).help("Open \(w.lead.cwd) in Finder")
           }
         }
+        fact("Started by") { Text(w.provenance) }
+        ForEach(w.listeners, id: \.self) { l in
+          fact(l.transport == .unix ? "Socket" : "Listens") {
+            HStack(spacing: 5) {
+              Text(l.text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                .lineLimit(1).truncationMode(.middle)
+              if l.transport != .unix {
+                Text(l.wildcard ? "reachable from your network" : "this Mac only")
+                  .foregroundStyle(l.wildcard ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+              }
+            }
+          }
+        }
+        if !w.members.isEmpty {
+          fact("Uses") {
+            HStack(spacing: 8) {
+              Text("\(memoryText(w.memory)) · \(String(format: "%.0f%%", w.cpu)) CPU")
+              Sparkline(samples: w.history.map(\.cpu)).frame(width: 60, height: 12)
+                .accessibilityHidden(true)
+            }
+          }
+        }
+      }.font(.system(size: 11))
+      ForEach(w.cautions + [w.blocked].compactMap { $0 }, id: \.self) { note in
+        Label(note, systemImage: w.blocked == note ? "lock.fill" : "info.circle")
+          .font(.system(size: 11)).foregroundStyle(.secondary)
       }
-      if !w.root.command.isEmpty {
-        ScrollView(.horizontal) {
-          Text(w.root.command).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-            .padding(9)
-        }.background(.primary.opacity(0.04)).clipShape(RoundedRectangle(cornerRadius: 6))
-      }
-      ForEach(w.listeners, id: \.self) { l in
-        HStack(spacing: 6) {
-          Image(systemName: l.wildcard ? "antenna.radiowaves.left.and.right" : "lock")
-            .foregroundStyle(l.wildcard ? .orange : .secondary)
-          Text("\(l.address):\(String(l.port))").font(.system(size: 10, design: .monospaced))
-          Text(l.wildcard ? "reachable from your network" : "local only").foregroundStyle(
-            .secondary)
-          if l.pid != w.root.pid { Text("· PID \(l.pid)").foregroundStyle(.tertiary) }
-        }.font(.system(size: 10))
-      }
-      ForEach(w.cautions, id: \.self) { caution in
-        Label(caution, systemImage: "info.circle").font(.system(size: 10)).foregroundStyle(
-          .secondary)
-      }
-      if let blocked = w.blocked {
-        Label(blocked, systemImage: "lock").font(.system(size: 10)).foregroundStyle(.secondary)
-      }
-      if !w.members.isEmpty { tree }
-      buttons
+      if w.members.count > 1 || !w.excluded.isEmpty { tree }
       if let message = store.messages[w.id] {
         Text(message).font(.system(size: 11)).foregroundStyle(.orange).textSelection(.enabled)
       }
-    }.padding(.horizontal, 11).padding(.bottom, 9)
+      actions
+    }.padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 10)
   }
-  var tree: some View {
-    DisclosureGroup("Process tree", isExpanded: $store.showTree) {
-      VStack(alignment: .leading, spacing: 5) {
-        ForEach(w.members, id: \.identity) { p in
-          HStack(spacing: 6) {
-            Text("\(p.pid)").frame(width: 44, alignment: .trailing).foregroundStyle(.tertiary)
-            Text(
-              p.args.dropFirst().first.map { URL(fileURLWithPath: $0).lastPathComponent }.map {
-                "\(p.base) \($0)"
-              } ?? p.base
-            ).lineLimit(1)
-            if p.suspended { Text("suspended").foregroundStyle(.orange) }
-            Spacer()
-            Text(memoryText(p.memory)).foregroundStyle(.tertiary)
-            Menu {
-              Button("Stop \(p.pid)") { store.act(p, in: w, .terminate) }
-              Button("Force Quit \(p.pid)") { store.act(p, in: w, .kill) }
-              Button("Copy command") { store.copy(p.command) }
-            } label: {
-              Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 18)
-            .accessibilityLabel("Actions for \(p.pid)")
-          }.font(.system(size: 10, design: .monospaced)).help(p.command)
-        }
-        ForEach(w.excluded, id: \.identity) { p in
-          HStack(spacing: 6) {
-            Text("\(p.pid)").frame(width: 44, alignment: .trailing).foregroundStyle(.tertiary)
-            Text(p.base).lineLimit(1)
-            Text("left running · \(Policy.protection(p) ?? "protected")").foregroundStyle(.tertiary)
-            Spacer()
-          }.font(.system(size: 10, design: .monospaced))
-        }
-      }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
-    }.font(.system(size: 10)).foregroundStyle(.secondary)
+  private func fact(_ name: String, @ViewBuilder _ value: () -> some View) -> some View {
+    GridRow {
+      Text(name).foregroundStyle(.tertiary).gridColumnAlignment(.trailing)
+      value().frame(maxWidth: .infinity, alignment: .leading)
+    }
   }
-  var buttons: some View {
-    HStack(spacing: 8) {
-      if !w.ports.isEmpty, w.kind.web {
-        Menu("Open") {
-          ForEach(w.ports, id: \.self) { port in
-            Button(":\(String(port))") { store.open(port: port) }
+  /// The command as typed: the executable by name, not by the path it resolved to.
+  private var command: String {
+    let args = w.lead.args
+    let name = args.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+    return ([name] + args.dropFirst().map(shellQuote)).joined(separator: " ")
+  }
+  private func abbreviated(_ path: String) -> String {
+    (path as NSString).abbreviatingWithTildeInPath
+  }
+  private var rename: some View {
+    HStack {
+      TextField("Display name", text: $store.renameText).textFieldStyle(.roundedBorder)
+        .font(.system(size: 12)).focused($renameFocused).onSubmit { store.commitRename(w) }
+        .accessibilityLabel("Display name")
+      Button("Save") { store.commitRename(w) }.keyboardShortcut(.defaultAction)
+      Button("Cancel") { store.renaming = nil }
+    }.controlSize(.small).onAppear { renameFocused = true }
+  }
+  private var tree: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      ForEach(w.members, id: \.identity) { p in
+        HStack(spacing: 8) {
+          Text(String(p.pid)).frame(width: 44, alignment: .trailing).foregroundStyle(.tertiary)
+          Text(Program(p).summary).lineLimit(1).truncationMode(.middle)
+          if p.suspended { Text("suspended").foregroundStyle(.orange) }
+          Spacer(minLength: 4)
+          Text(memoryText(p.memory)).foregroundStyle(.tertiary)
+          Menu {
+            Button("Stop \(String(p.pid))") { store.act(p, in: w, .terminate) }
+            Button("Force Quit \(String(p.pid))") { store.act(p, in: w, .kill) }
+            Button("Copy Command") { store.copy(p.command) }
+          } label: {
+            Image(systemName: "ellipsis").frame(width: 16, height: 14).contentShape(.rect)
           }
-        }.frame(width: 65)
+          .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+          .foregroundStyle(.secondary).accessibilityLabel("Actions for process \(p.pid)")
+          .disabled(w.blocked != nil)
+        }.help(p.command)
       }
-      if !w.root.cwd.isEmpty, w.root.cwd != "/", w.section != .system {
-        Menu("Project") {
-          Button("Open folder") { NSWorkspace.shared.open(URL(fileURLWithPath: w.root.cwd)) }
-          Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.root.cwd)])
-          }
-          Divider()
-          ForEach(Launcher.editors, id: \.self) { name in
-            Button("Open in \(name)") { Launcher.openIn(name, w.root.cwd) }
-          }
-          Divider()
-          ForEach(Launcher.agents, id: \.path) { agent in
-            Button("\(agent.name) here") { store.agentHere(agent.path, w) }
-          }
-          Divider()
-          Button("Copy for agent") {
-            store.copy(
-              Launcher.agentContext(w, displayName: store.name(w)),
-              note: "Summary copied. Paste it into your agent.")
-          }
-        }.frame(width: 80)
+      ForEach(w.excluded, id: \.identity) { p in
+        HStack(spacing: 8) {
+          Text(String(p.pid)).frame(width: 44, alignment: .trailing)
+          Text("\(p.base) · left running, \(Policy.protection(p) ?? "protected")").lineLimit(1)
+        }.foregroundStyle(.tertiary)
       }
+    }
+    .font(.system(size: 11, design: .monospaced)).monospacedDigit().padding(.vertical, 6)
+    .padding(.trailing, 8).background(.fill.quaternary, in: .rect(cornerRadius: 7))
+  }
+  private var actions: some View {
+    HStack(spacing: 6) {
+      if let url = w.url {
+        Button("Open", systemImage: "arrow.up.right") { NSWorkspace.shared.open(url) }
+      }
+      Menu {
+        WorkloadMenu(store: store, w: w)
+      } label: {
+        Label("More", systemImage: "ellipsis")
+      }.fixedSize()
       Spacer()
-      if store.acting.contains(w.id) { ProgressView().controlSize(.small) }
       if w.blocked == nil {
+        let busy = store.acting.contains(w.id)
         if w.launchdLabel != nil {
-          Button(w.brewService != nil ? "brew stop" : "Unload") { store.unload(w) }.help(
-            w.cautions.first ?? "")
+          Button(w.brewService != nil ? "brew stop" : "Unload") { store.unload(w) }
+            .help(w.cautions.first ?? "").disabled(busy)
         }
-        if w.section != .apps {
-          Button("Restart") { store.restart(w) }.disabled(
-            w.restartReason != nil || store.acting.contains(w.id)
-          )
-          .help(w.restartReason ?? "Stop, then rerun the command in Terminal")
-        }
+        if w.restartReason == nil { Button("Restart") { store.restart(w) }.disabled(busy) }
+        Button("Force Quit") { store.act(w, .kill) }.disabled(busy).help("SIGKILL · ⌘⇧⌫")
         Button(w.section == .apps ? "Quit" : "Stop") { store.act(w, .terminate) }
-          .disabled(store.acting.contains(w.id)).help(
-            "SIGTERM to \(w.members.count) processes · ⌘⌫")
-        if store.lingering.contains(w.id) {
-          Button("Force Quit") { store.act(w, .kill) }.tint(.red).buttonStyle(.borderedProminent)
-            .disabled(store.acting.contains(w.id)).help("SIGKILL · ⌘⇧⌫")
-        } else {
-          Button("Force Quit") { store.act(w, .kill) }.disabled(store.acting.contains(w.id)).help(
-            "SIGKILL · ⌘⇧⌫")
-        }
+          .buttonStyle(.borderedProminent).disabled(busy)
+          .help("SIGTERM to \(w.members.count) process\(w.members.count == 1 ? "" : "es") · ⌘⌫")
       }
-    }.controlSize(.small)
+    }.controlSize(.small).labelStyle(.titleAndIcon)
   }
 }

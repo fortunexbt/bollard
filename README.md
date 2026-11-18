@@ -1,6 +1,6 @@
 # Bollard
 
-Every server on your Mac, in the menu bar, with a Stop button that works.
+Everything you left running on your Mac, in the menu bar, with a Stop button that works.
 
 ![Bollard panel](docs/screenshot.png)
 
@@ -14,31 +14,28 @@ brew install --cask fortunexbt/tap/bollard
 Homebrew 7 only loads formulae, casks and commands from official taps or taps
 you trust, so the first command is needed once per machine.
 
-Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications. The build is signed but not notarized, so the first launch needs a right-click → Open, or:
+Or download `Bollard-<version>.dmg` from [Releases](https://github.com/fortunexbt/bollard/releases) and drag Bollard to Applications.
 
-```sh
-xattr -dr com.apple.quarantine /Applications/Bollard.app
-```
-
-Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 14 or later on Apple silicon.
+Then click the bollard in your menu bar, or press ⌃⌥B. Needs macOS 26 or later on Apple silicon.
 
 To build from source: `./scripts/build.sh && ./scripts/install.sh` with the Xcode command-line tools.
 
-Bollard is a native macOS menu bar app for people who run a lot of local servers, often started by coding agents they are not watching. It shows every TCP listener on the machine, names each one by project and git branch, says which agent or tool started it, and stops it with one click, a shortcut, a command, or a tool call from the agent itself. SwiftUI + AppKit, a small C bridge over Darwin's kernel tables, no runtime dependencies, no telemetry, no network requests, no privileged helper.
+Bollard is a native macOS menu bar app for people who run a lot of local work, much of it started by coding agents they are not watching. It shows every server, script, background job and agent session of yours, names each one by project and git branch, says what it runs and who started it, and stops it with one click, a shortcut, a command, or a tool call from the agent itself. SwiftUI on Liquid Glass, a small C bridge over Darwin's process interfaces, no runtime dependencies, no telemetry, no network requests, no privileged helper.
 
 ## What you see
 
-Four lanes, plus a Recent lane of servers you can bring back:
+Bollard does not keep a list of programs it knows. Every long-lived process tree that belongs to you is listed, unless it is part of macOS, part of an application, or a terminal session you are sitting in. A compiled binary, a `python -c` one-liner or a shell loop shows up the same way a Next.js server does; recognising the program only improves the label.
 
-- **Servers**: dev workloads with a listening port, named by project directory. Framework, port chips, git branch or worktree, the launcher (Claude Code, Codex, Cursor, Terminal, launchd…), memory and CPU across the process tree, a CPU sparkline, uptime.
-- **Background**: watchers, workers, tunnels and scripts with no port. Orphans are marked.
-- **Apps**: GUI applications that listen. Helpers merge into their application; Quit goes through the app.
-- **System & tools**: macOS daemons, other users' ports, and helpers owned by an agent, editor or notebook (MCP servers, language servers, kernels). Visible, never signalled.
+- **Servers**: anything with a TCP or UDP port. The project (its repository's name), what it runs (`next dev`, `worker.py`, `-m http.server`), port chips, the branch, who started it (Claude Code, Codex, Cursor, Terminal, launchd…), memory, and CPU while it is busy.
+- **Background**: the same, without a port: scripts, workers, watchers, tunnels, launch agents, whatever an agent is running through its shell right now. Unix-domain sockets are shown in the detail. Orphans are marked.
+- **Agents**: each coding-agent session, with the helpers it started directly (its MCP servers) counted and summed into its memory.
+- **Apps**: applications that listen on a port, with their own icons. Helpers merge into their application; Quit goes through the app.
+- **System & tools**: macOS services that listen. Visible, never signalled.
 - **Recent**: servers that went away, with Launch to run them again in Terminal with the same command and directory.
 
-An antenna badge means the port is bound to all interfaces and reachable from your network; the menu bar icon turns orange when a dev server is.
+A quiet command has to live three seconds before it is listed, so one-shot commands do not flicker through. An orange port and antenna mean the port is bound to all interfaces and reachable from your network; the count in the menu bar turns orange too.
 
-Pills under the search box filter by launcher. With a filter active, "Stop all" stops only that launcher's servers, so "everything Claude Code left running" is one menu item.
+Pills under the search box filter by launcher. With a filter active, "Stop All" stops only that launcher's servers, so "everything Claude Code left running" is one menu item. A server that outlives the shell or agent that started it still says where it came from.
 
 ## Stopping things
 
@@ -51,9 +48,11 @@ Hover a row for Stop, click twice to confirm (⌥ for Force Quit). Right-click f
 - **Unload** removes a user launch agent with `launchctl bootout`; Homebrew services use `brew services stop`.
 - **Stop all** and **Force quit all** in the ⋯ menu, scoped by the filter.
 
-Keyboard: ⌃⌥B opens the panel from anywhere, ↑/↓ select, ⌘⌫ stop, ⌘⇧⌫ force quit, ⌘O open the first port, ⌘P pin, ⌘F search, ⌘R refresh, Esc close.
+Keyboard: ⌃⌥B opens the panel from anywhere with the search field focused, ↑/↓ select, ⏎ open in the browser, ⌘⌫ stop, ⌘⇧⌫ force quit, ⌘O open, ⌘P pin, ⌘R refresh, Esc close.
 
-The kill set is the root's tree minus protected processes and their subtrees. Protected: launchd, Bollard itself, other users' processes, macOS system paths, terminals and editors, coding agents, login and session processes, interactive shells, game clients. Nothing else is refused; rows carry cautions instead (a launchd label that may restart it, a parent loop that may respawn it, protected descendants left running, a suspended process resumed first).
+The kill set is the root's tree minus protected processes and their subtrees. Protected: launchd, Bollard itself and whatever it is running under, other users' processes, macOS system paths, terminals and editors, login and session processes, interactive shells and the full-screen programs in them, game clients. Rows carry cautions instead of refusals (a launchd label that may restart it, protected descendants left running, a suspended process resumed first).
+
+Ending an agent session ends the agent and its helpers. Servers it launched through its shell are their own rows and keep running. `bollard --stop <name>` never matches an agent session (use its PID), and the MCP server never ends one.
 
 Every signal goes through `proc_signal_with_audittoken` after re-reading start time, unique id and generation, so a reused PID is never signalled. The live tree is re-derived before signalling: new descendants are included, exited ones skipped, a changed command or owner aborts.
 
@@ -67,7 +66,7 @@ claude mcp add -s user bollard -- ~/.local/bin/bollard --mcp
 
 Every tool carries MCP annotations (read-only, destructive, idempotent), and the server speaks protocol 2025-06-18 and falls back to older versions a client asks for. `free_port` and `wait_for_port` probe sockets directly rather than the process list. They see listeners on loopback and wildcard addresses, not one bound only to a LAN address. `wait_for_port` waits at most 120 s.
 
-`bollard --json` is the stable shape. Each row includes `name`, `kind`, `section`, `pid`, `ports`, `listeners`, `provenance`, `origin`, `branch`, `directory`, `command`, `cautions`, `blocked`, `launchd` and `url`. `url` is `http://localhost:<port>` for web servers and `null` otherwise.
+`bollard --json` is the stable shape. Each row includes `name`, `runs`, `kind`, `section`, `pid`, `ports`, `listeners` (with `transport`), `sockets`, `provenance`, `origin`, `branch`, `directory`, `command`, `cautions`, `blocked`, `launchd` and `url`. `url` is `http://localhost:<port>` for web servers and `null` otherwise.
 
 The ⋯ menu copies that command. "Copy for agent" on any row puts a Markdown summary (URL, PID, directory, branch, command, how to stop it) on the clipboard. "Claude Code here" and "Codex here" open a terminal in the project with the agent running.
 
@@ -101,9 +100,11 @@ A process running `python control.py run` in that directory becomes the workload
 
 ## How discovery works
 
-Two reads per scan. `KERN_PROC_ALL` gives the process table. `net.inet.tcp.pcblist_n` gives every TCP socket with its state, bound address and last owning PID when the kernel returns it. macOS 27 returns an empty table to some callers, so in that case Bollard walks the descriptors of every process it can inspect and keeps the TCP sockets in LISTEN, which takes about 1 ms. Executable path, arguments and identity are read once per process generation. Socket ownership is confirmed through the owner's descriptors the first time a socket is seen. Only displayed workloads are sampled for memory and CPU. Branches come from `.git/HEAD`, no git binary.  Bollard never runs lsof. Like lsof, it sees the listeners of processes owned by your user, not root or other users.
+Two reads per scan. `KERN_PROC_ALL` gives the process table. A walk over the descriptors of every process Bollard may inspect gives the sockets: TCP in LISTEN, bound UDP and listening Unix-domain sockets, each with the process that actually holds it. macOS 27 no longer hands the kernel's socket table to apps, so descriptors are the one source that works everywhere. Bollard never runs lsof, and like lsof it sees your own processes' sockets, not root's or other users'.
 
-The panel scans every 4 s while open and every 120 s while closed when nothing is running, or every 2 s and 30 s while workloads are active. Steady-state scans take about 3 ms; see `docs/performance/`.
+Executable path, arguments and identity are read once per process generation, and reread when a process execs. Each process gets a role from where its executable lives and what it is attached to, and its command line is parsed into the program it runs (looking through interpreters, package runners and rewritten process titles) so labels match whole names, never substrings. Who started a detached process comes from macOS's responsible-process record. Only displayed workloads are sampled for memory and CPU. Branches come from `.git/HEAD`, no git binary.
+
+The panel scans every 2 s while open and every 30 s while closed, slowing to 4 s and 120 s when nothing is running. A steady-state scan takes about 9 ms with 790 processes; see `docs/performance/`.
 
 ## Build from source
 
@@ -118,9 +119,9 @@ Ad-hoc signed by default. Set `SIGN_IDENTITY` to a Developer ID certificate and 
 Checks:
 
 ```sh
-swift build --build-system native
+swift build
 .build/debug/BollardChecks --policy-only     # pure policy, git and controller checks
-.build/debug/BollardChecks                   # socket table and lsof parity (lsof is only the test oracle), disposable servers, a launch agent, an app bundle, stop all
+.build/debug/BollardChecks                   # socket walk and lsof parity (lsof is only the test oracle), disposable servers, a launch agent, an app bundle, stop all
 .build/release/BollardBench                  # scan timings as JSON
 swift format lint -r Sources Tests Package.swift
 ```
@@ -129,5 +130,4 @@ The live checks create their own fixtures and remove them, including on failure.
 
 ## Sources
 
-- [Apple XNU `in_pcb.h`, `socketvar.h`, `tcp_var.h`](https://github.com/apple-oss-distributions/xnu/tree/main/bsd): the `pcblist_n` socket table, also used by netstat.
 - [Apple Darwin process identity ABI](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info_private.h).

@@ -13,13 +13,22 @@ set -euo pipefail
 cd "${0:A:h:h}"
 version=$(grep -m1 'let version = ' Sources/Bollard/CLI.swift | sed 's/.*"\(.*\)".*/\1/')
 build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
-swift build -c release --product Bollard --triple arm64-apple-macosx14.0
-bin=$(swift build -c release --product Bollard --triple arm64-apple-macosx14.0 --show-bin-path)
+swift build -c release --product Bollard --triple arm64-apple-macosx26.0
+bin=$(swift build -c release --product Bollard --triple arm64-apple-macosx26.0 --show-bin-path)
 app="$PWD/build/Bollard.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/Bollard" "$app/Contents/MacOS/Bollard"
-cp Resources/Bollard.icns Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png "$app/Contents/Resources/"
+cp Resources/Bollard.icns Resources/MenuBarIcon.pdf "$app/Contents/Resources/"
+# The layered icon becomes Assets.car, which keeps Liquid Glass and the dark, clear and tinted
+# looks. actool also writes its own .icns, which is discarded: the committed one is what Finder
+# shows for the disk image.
+icon_out=$(mktemp -d)
+xcrun actool Resources/Bollard.icon --compile "$icon_out" --output-format human-readable-text \
+  --notices --warnings --errors --platform macosx --target-device mac --minimum-deployment-target 26.0 \
+  --app-icon Bollard --include-all-app-icons --output-partial-info-plist "$icon_out/partial.plist" >/dev/null
+cp "$icon_out/Assets.car" "$app/Contents/Resources/"
+rm -rf "$icon_out"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,10 +38,11 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>Bollard</string>
 <key>CFBundleDisplayName</key><string>Bollard</string>
 <key>CFBundleIconFile</key><string>Bollard</string>
+<key>CFBundleIconName</key><string>Bollard</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$build</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSHumanReadableCopyright</key><string>Local only. No telemetry, no network requests.</string>

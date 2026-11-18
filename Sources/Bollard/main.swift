@@ -9,6 +9,17 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
 let arguments = Array(CommandLine.arguments.dropFirst())
 let flags = Set(arguments.filter { $0.hasPrefix("--") })
 let positional = arguments.filter { !$0.hasPrefix("--") }
+#if DEBUG
+  if flags.contains("--render") {
+    guard let path = positional.first else { fail("Usage: bollard --render <png> [target]") }
+    try MainActor.assumeIsolated {
+      try Render.run(
+        to: path, expanding: positional.dropFirst().first,
+        search: positional.dropFirst(2).first ?? "", light: flags.contains("--light"))
+    }
+    exit(0)
+  }
+#endif
 if flags.contains("--help") || flags.contains("-h") {
   print(CLI.help)
 } else if flags.contains("--version") {

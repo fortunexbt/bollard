@@ -1,6 +1,5 @@
 import AppKit
 import BollardCore
-import Combine
 import Foundation
 import SwiftUI
 
@@ -12,58 +11,60 @@ enum WorkloadSort: String, CaseIterable {
   case uptime = "Uptime"
 }
 
-@MainActor final class Store: ObservableObject {
-  private let defaults = UserDefaults.standard
-  @Published var sort: WorkloadSort {
+@MainActor @Observable final class Store {
+  @ObservationIgnored private let defaults = UserDefaults.standard
+  var sort: WorkloadSort {
     didSet { defaults.set(sort.rawValue, forKey: "sort") }
   }
-  @Published var collapsed: Set<String> {
+  var collapsed: Set<String> {
     didSet { defaults.set(Array(collapsed), forKey: "collapsed") }
   }
-  @Published var notify: Bool {
+  var notify: Bool {
     didSet {
       defaults.set(notify, forKey: "notify")
       if notify { notifier.prepare() }
     }
   }
-  @Published var hotkeyEnabled: Bool {
+  var hotkeyEnabled: Bool {
     didSet { defaults.set(hotkeyEnabled, forKey: "hotkey") }
   }
-  @Published var notice: String?
-  @Published var search = ""
+  var notice: String?
+  var search = ""
   /// Origin filter (Claude Code, Codex, Terminal…); nil shows everything.
-  @Published var filter: String?
-  @Published var scan: Scan?
-  @Published var error: String?
-  @Published var busy = false
-  @Published var selected: Identity?
-  @Published var showTree = false
-  @Published var renaming: Identity?
-  @Published var renameText = ""
+  var filter: String?
+  var scan: Scan?
+  var error: String?
+  var busy = false
+  var selected: Identity?
+  var showTree = false
+  var renaming: Identity?
+  var renameText = ""
   /// Row whose hover button is waiting for its second click, and the signal it will send.
-  @Published var armed: (id: Identity, signal: Signal)?
-  @Published var acting: Set<Identity> = []
-  @Published var messages: [Identity: String] = [:]
+  var armed: (id: Identity, signal: Signal)?
+  var acting: Set<Identity> = []
+  var messages: [Identity: String] = [:]
   /// Workloads that survived a Stop and now offer Force Quit prominently.
-  @Published var lingering: Set<Identity> = []
-  @Published var listHeight: Double = 0
-  @Published var chromeHeight: Double = 0
-  @Published var historyVersion = 0
+  var lingering: Set<Identity> = []
+  var listHeight: Double = 0
+  var chromeHeight: Double = 0
+  var historyVersion = 0
+  /// Counts panel openings, so the search field can take focus each time.
+  var opened = 0
   var visible = false
-  var searchFocused = false
-  let history = History()
-  let notifier = Notifier()
+  @ObservationIgnored let history = History()
+  @ObservationIgnored let notifier = Notifier()
   var isQuiet: Bool {
     scan?.workloads.allSatisfy { $0.section == .system } == true && error == nil
       && history.recent.isEmpty
   }
-  var compact: Bool { isQuiet && notice == nil && acting.isEmpty }
-  private var refreshPending = false
-  private var armTimer: Task<Void, Never>?
-  private let monitor = ProcessMonitor()
-  private var exits: [Identity: DispatchSourceProcess] = [:]
+  /// The panel's natural height: everything above and below the list, plus the list itself.
+  var desiredHeight: Double { chromeHeight + listHeight }
+  @ObservationIgnored private var refreshPending = false
+  @ObservationIgnored private var armTimer: Task<Void, Never>?
+  @ObservationIgnored private let monitor = ProcessMonitor()
+  @ObservationIgnored private var exits: [Identity: DispatchSourceProcess] = [:]
   /// Identities Bollard itself signalled recently, so their exit is not reported as unexpected.
-  private var ownStops: [Identity: Date] = [:]
+  @ObservationIgnored private var ownStops: [Identity: Date] = [:]
 
   init() {
     sort = WorkloadSort(rawValue: defaults.string(forKey: "sort") ?? "Name") ?? .name
@@ -81,7 +82,7 @@ enum WorkloadSort: String, CaseIterable {
     (scan?.workloads ?? []).filter { w in
       (filter == nil || w.origin == filter)
         && (search.isEmpty
-          || "\(name(w)) \(w.name) \(w.kind.name) \(w.ports.map { ":\(String($0))" }.joined(separator: " ")) \(w.provenance) \(w.origin) \(w.branch ?? "") \(w.root.pid)"
+          || "\(name(w)) \(w.name) \(w.detail) \(w.kind.name) \(w.ports.map { ":\(String($0))" }.joined(separator: " ")) \(w.provenance) \(w.origin) \(w.branch ?? "") \(w.root.pid)"
             .localizedCaseInsensitiveContains(search))
     }.sorted { a, b in
       let pa = pinned(a)
@@ -112,9 +113,16 @@ enum WorkloadSort: String, CaseIterable {
     }
   }
   func open(_ section: Lane) -> Bool { !collapsed.contains(section.rawValue) || !search.isEmpty }
+  func toggle(_ section: String) {
+    if collapsed.contains(section) { collapsed.remove(section) } else { collapsed.insert(section) }
+  }
   /// Rows in display order, for keyboard navigation.
   var visibleRows: [Workload] {
-    Lane.allCases.flatMap { section in section == .servers || open(section) ? lane(section) : [] }
+    Lane.allCases.flatMap { section in open(section) ? lane(section) : [] }
+  }
+  func select(_ w: Workload) {
+    selected = selected == w.id ? nil : w.id
+    armed = nil
   }
   func workload(_ id: Identity) -> Workload? { scan?.workloads.first { $0.id == id } }
   var current: Workload? { selected.flatMap(workload) }
@@ -386,6 +394,11 @@ enum WorkloadSort: String, CaseIterable {
     }
   }
   func open(port: Int) { NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!) }
+  /// Return in the search field: open the selected or first server in the browser, else expand it.
+  func activate() {
+    guard let w = current ?? visibleRows.first else { return }
+    if let url = w.url { NSWorkspace.shared.open(url) } else { selected = w.id }
+  }
   func copy(_ s: String, note: String = "Copied.") {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(s, forType: .string)
@@ -410,8 +423,8 @@ enum WorkloadSort: String, CaseIterable {
       guard let w = current, w.blocked == nil else { return false }
       act(w, .kill)
     case (31, [.command]):
-      guard let w = current, let port = w.ports.first else { return false }
-      open(port: port)
+      guard let url = current?.url else { return false }
+      NSWorkspace.shared.open(url)
     case (15, [.command]): refresh()
     case (35, [.command]):  // ⌘P pin
       guard let w = current else { return false }
