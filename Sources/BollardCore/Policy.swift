@@ -281,9 +281,11 @@ public enum Policy {
         if apple || root.path.hasPrefix("/Library/") || root.path.hasPrefix(home + "/Library/") {
           continue
         }
-        // A daemon a toolchain leaves behind, such as Xcode's ibtoold, as opposed to a job the
-        // user had launchd run with that toolchain's interpreter.
-        if root.parent == 1, label == nil, root.path.contains(".app/Contents/Developer/") {
+        // A daemon a toolchain leaves behind, such as Xcode's ibtoold. Its interpreters are
+        // different: /usr/bin/python3 is Xcode's Python, and what it runs is the user's.
+        if root.parent == 1, label == nil, root.path.contains(".app/Contents/Developer/"),
+          programs[pid]?.runtime == nil
+        {
           continue
         }
       }

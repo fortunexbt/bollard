@@ -260,7 +260,7 @@ struct PolicyTests {
       86, 1, "\(xcode)/usr/bin/python3", ["python3", "/Users/me/tools/sync.py"], cwd: "/")
     let labels: [Int32: String] = [
       80: "homebrew.mxcl.postgresql@17", 81: "com.openssh.ssh-agent", 83: "dev.me.relay",
-      84: "dev.me.thing", 86: "dev.me.sync",
+      84: "dev.me.thing",
     ]
     let rows = Policy.workloads(all, listeners: [l(5432, 80)], labels: labels)
     check(
