@@ -207,8 +207,11 @@ public final class Scanner {
     orphans = orphans.intersection(Set(all.values.map(\.identity)))
     let labels = launcherCache.current(in: all)
     var workloads = Policy.workloads(all, listeners: listeners, labels: labels, orphans: orphans)
+    // Roots a label has hidden, such as Apple's own agents, stay in the lookup set; dropping them
+    // would forget the label and show them again on the next scan.
+    let roots = workloads.map(\.root) + labels.keys.compactMap { all[$0] }
     if let fresh = try? launcherCache.update(
-      roots: workloads.map(\.root), processes: all, lookup: Native.launchdLabels), fresh != labels
+      roots: roots, processes: all, lookup: Native.launchdLabels), fresh != labels
     {
       workloads = Policy.workloads(all, listeners: listeners, labels: fresh, orphans: orphans)
     }
