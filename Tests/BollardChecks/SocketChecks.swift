@@ -23,7 +23,7 @@ func ownListenerChecks() throws {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
   }
   let port = Int(UInt16(bigEndian: address.sin_port))
-  let found = try Native.listeners()
+  let found = try Native.sockets()
   guard found.contains(where: { $0.pid == getpid() && $0.port == port }) else {
     throw SafetyError(
       "Own listener on port \(port) missing from \(found.count) listeners")
@@ -34,7 +34,7 @@ func ownListenerChecks() throws {
   }
 }
 
-/// Read-only comparison of the kernel socket table against lsof for this user's listeners.
+/// Read-only comparison of the descriptor walk against lsof for this user's listeners.
 /// Listeners come and go between snapshots, so each Bollard listener must appear in the lsof
 /// snapshot taken just before or just after it, and every port lsof saw both times must be present.
 func socketParityChecks() throws {
@@ -42,7 +42,7 @@ func socketParityChecks() throws {
   var compared = 0
   for _ in 0..<12 {
     let before = try lsofListeners()
-    let native = try Scanner().scan().listeners.filter { $0.uid == getuid() }
+    let native = try Scanner().scan().listeners.filter { $0.transport == .tcp }
     let after = try lsofListeners()
     let ports = Set(native.map(\.port))
     for port in Set(before.keys).intersection(after.keys) {
@@ -63,7 +63,7 @@ func socketParityChecks() throws {
     throw SafetyError("No listeners were available; socket parity is unverified.")
   }
   print(
-    "\(checked) read-only socket-table/lsof parity checks passed across \(compared) listener comparisons"
+    "\(checked) read-only socket-walk/lsof parity checks passed across \(compared) listener comparisons"
   )
 }
 private func lsofListeners() throws -> [Int: Set<Int32>] {

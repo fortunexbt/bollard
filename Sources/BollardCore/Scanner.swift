@@ -1,15 +1,6 @@
 import Foundation
 import ProcessBridge
 
-/// Immutable-per-generation process facts, read once when a process is first seen.
-struct Detail {
-  var unique: UInt64
-  var parentUnique: UInt64
-  var version: Int32
-  var path: String
-  var args: [String]
-}
-
 public enum Native {
   static func cString<T>(_ value: inout T) -> String {
     withUnsafePointer(to: &value) {
@@ -22,19 +13,39 @@ public enum Native {
     guard count > 0 else { throw SafetyError("Process table unavailable: \(errorText(count))") }
     return Array(buffer.prefix(Int(count)))
   }
-  static func detail(_ pid: Int32) -> Detail? {
+  private static let argumentCapacity = 262144
+  /// A full record for one of this user's processes, or the kernel's bare entry for anyone else's.
+  static func proc(_ e: DPEntry, me: uid_t) -> Proc? {
+    var comm = e.comm
+    let name = cString(&comm)
     var raw = DPIdentity()
-    guard dp_identity(pid, &raw) == 1 else { return nil }
-    let argv = [CChar](unsafeUninitializedCapacity: 262144) { buffer, initializedCount in
-      initializedCount = max(0, Int(dp_args(pid, buffer.baseAddress!, Int32(buffer.count))))
+    guard e.uid == me, e.status != 5 else {
+      var p = Proc(
+        pid: e.pid, parent: e.ppid, start: e.start, unique: 0, version: 0, pgid: e.pgid,
+        uid: e.uid, path: "", cwd: "", args: [])
+      p.status = e.status
+      p.comm = name
+      return p
+    }
+    guard dp_identity(e.pid, &raw) == 1 else { return nil }
+    let argv = [CChar](unsafeUninitializedCapacity: argumentCapacity) { buffer, count in
+      count = max(0, Int(dp_args(e.pid, buffer.baseAddress!, Int32(buffer.count))))
     }
     let args = argv.split(separator: 0).map {
       String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
-    return Detail(
-      unique: raw.unique, parentUnique: raw.parent_unique, version: raw.version,
-      path: cString(&raw.path), args: args)
+    var p = Proc(
+      pid: e.pid, parent: e.ppid, start: e.start, unique: raw.unique, version: raw.version,
+      parentUnique: raw.parent_unique, pgid: e.pgid, uid: e.uid, path: cString(&raw.path),
+      cwd: cwd(e.pid), args: args)
+    p.status = e.status
+    p.foreground = e.foreground != 0
+    p.responsible = dp_responsible(e.pid)
+    if p.comm.isEmpty { p.comm = name }
+    return p
   }
+  /// The process generation, which exec advances. 0 when the process is gone.
+  static func generation(_ pid: Int32) -> Int32 { dp_generation(pid) }
   static func cwd(_ pid: Int32) -> String {
     var buffer = [CChar](repeating: 0, count: 4096)
     guard dp_cwd(pid, &buffer, Int32(buffer.count)) == 1 else { return "" }
@@ -44,79 +55,50 @@ public enum Native {
     var raw = DPUsage()
     return dp_usage(pid, &raw) == 1 ? (raw.memory, raw.cpu) : nil
   }
-  /// A complete process record, used by control paths that must not trust a cached scan.
-  public static func read(_ pid: Int32) -> Proc? {
-    guard let entry = try? table().first(where: { $0.pid == pid }), let d = detail(pid) else {
-      return nil
-    }
-    var p = Proc(
-      pid: pid, parent: entry.ppid, start: entry.start, unique: d.unique, version: d.version,
-      parentUnique: d.parentUnique, pgid: entry.pgid, uid: entry.uid, path: d.path,
-      cwd: cwd(pid), args: d.args)
-    p.status = entry.status
-    if let u = usage(pid) {
-      p.memory = u.memory
-      p.cpuTime = u.cpu
-    }
-    return p
-  }
-  /// A complete uncached snapshot for control paths.
+  /// A complete uncached snapshot for control paths, which must not trust a cached scan.
   public static func snapshot() throws -> [Int32: Proc] {
     let me = getuid()
     var all: [Int32: Proc] = [:]
     for e in try table() where e.pid > 0 {
-      var comm = e.comm
-      let name = cString(&comm)
-      var p: Proc
-      if e.uid == me, e.status != 5, let d = detail(e.pid) {
-        p = Proc(
-          pid: e.pid, parent: e.ppid, start: e.start, unique: d.unique, version: d.version,
-          parentUnique: d.parentUnique, pgid: e.pgid, uid: e.uid, path: d.path, cwd: cwd(e.pid),
-          args: d.args)
-      } else {
-        p = Proc(
-          pid: e.pid, parent: e.ppid, start: e.start, unique: 0, version: 0, pgid: e.pgid,
-          uid: e.uid, path: "", cwd: "", args: [])
+      guard var p = proc(e, me: me) else { continue }
+      if let u = usage(e.pid) {
+        p.memory = u.memory
+        p.cpuTime = u.cpu
       }
-      p.status = e.status
-      if p.comm.isEmpty { p.comm = name }
       all[e.pid] = p
     }
     return all
   }
-  /// Listening TCP sockets, from the kernel socket table when it is returned and otherwise from
-  /// the descriptors of every process this user can inspect.
-  /// Listening TCP sockets, from the kernel socket table when it is returned and otherwise from the descriptors of every process this user can inspect.
-  public static func listeners() throws -> [Listener] {
-    var buffer = [DPListener](repeating: DPListener(), count: 4096)
-    let count = dp_listeners(&buffer, Int32(buffer.count))
-    guard count >= 0 else { throw SafetyError("Socket table unavailable: \(errorText(count))") }
-    return buffer.prefix(Int(count)).map { raw in
-      var l = raw
-      let bytes = withUnsafeBytes(of: &l.address) { Array($0) }
+  /// Every socket this user's processes can be reached on, one record per holding process.
+  public static func sockets() throws -> [Listener] {
+    var raw: UnsafeMutablePointer<DPSocket>?
+    let count = dp_sockets(&raw)
+    defer { free(raw) }
+    guard count >= 0 else { throw SafetyError("Sockets unavailable: \(errorText(count))") }
+    return UnsafeBufferPointer(start: raw, count: Int(count)).map { s in
+      var s = s
+      let transport: Transport =
+        s.transport == DP_UDP ? .udp : s.transport == DP_UNIX ? .unix : .tcp
       return Listener(
-        port: Int(l.port), address: addressText(bytes, family: l.family), wildcard: l.wildcard != 0,
-        pid: l.pid,
-        uid: l.uid, socket: l.socket)
+        port: Int(s.port), address: transport == .unix ? "" : addressText(&s.address, s.family),
+        wildcard: s.wildcard != 0, pid: s.pid, transport: transport,
+        path: transport == .unix ? cString(&s.path) : "", socket: s.socket)
     }
   }
-  static func addressText(_ bytes: [UInt8], family: UInt8) -> String {
-    func dotted(_ slice: ArraySlice<UInt8>) -> String {
-      slice.map { String($0) }.joined(separator: ".")
+  static func addressText<T>(_ address: inout T, _ family: UInt8) -> String {
+    withUnsafeBytes(of: &address) { bytes in
+      // An IPv4 listener on a dual-stack socket reads better as the IPv4 address it is.
+      let mapped =
+        family == 6 && bytes[0..<10].allSatisfy { $0 == 0 } && bytes[10] == 0xff
+        && bytes[11] == 0xff
+      var text = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+      if family == 4 || mapped {
+        inet_ntop(AF_INET, bytes.baseAddress! + (mapped ? 12 : 0), &text, socklen_t(text.count))
+      } else {
+        inet_ntop(AF_INET6, bytes.baseAddress!, &text, socklen_t(text.count))
+      }
+      return String(decoding: text.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
-    if family == 4 { return dotted(bytes[0..<4]) }
-    let mapped = bytes[0..<10].allSatisfy { $0 == 0 } && bytes[10] == 0xff && bytes[11] == 0xff
-    if mapped { return dotted(bytes[12..<16]) }
-    if bytes.allSatisfy({ $0 == 0 }) { return "::" }
-    var groups: [String] = []
-    for i in stride(from: 0, to: 16, by: 2) {
-      let value = Int(bytes[i]) << 8 | Int(bytes[i + 1])
-      groups.append(String(value, radix: 16))
-    }
-    return groups.joined(separator: ":")
-  }
-  public static func ownsSocket(_ pid: Int32, _ socket: UInt64) -> Bool {
-    dp_owns_socket(pid, socket) == 1
   }
   public static func signal(_ p: Proc, _ sig: Int32) throws {
     let code = dp_signal(p.pid, p.identity.start, p.identity.unique, p.identity.version, sig)
@@ -170,64 +152,50 @@ public struct Scan: Sendable {
   public var date: Date
 }
 
-/// Builds a process snapshot cheaply: one kernel call for the table, one for sockets, and
-/// per-process detail only for generations not seen before.
+/// Builds a process snapshot cheaply: one kernel call for the table, one descriptor walk for
+/// sockets, and the per-process reads only for generations not seen before.
 public final class Scanner {
   private struct Key: Hashable {
     let pid: Int32
     let start: UInt64
   }
-  private var details: [Key: Detail] = [:]
-  private var cwds: [Key: String] = [:]
+  /// Records by generation, with the kernel's name for the process at the time it was read.
+  private var known: [Key: (proc: Proc, comm: String)] = [:]
   private var previous: [Int32: Proc] = [:]
   private var time = Date()
   private var orphans = Set<Identity>()
-  private struct SocketKey: Hashable {
-    let socket: UInt64
-    let port: Int
-    let reported: Int32
-  }
-  private var verifiedSockets: [SocketKey: Int32] = [:]
   private var launcherCache = LaunchOwnershipCache()
   private var history: [Identity: [Sample]] = [:]
   public init() {}
 
-  public func scan() throws -> Scan {
+  public func scan() throws -> Scan { try scan(retry: true) }
+
+  private func scan(retry: Bool) throws -> Scan {
     let begin = Date()
     let entries = try Native.table()
     let me = getuid()
-    let live = Set(entries.map { Key(pid: $0.pid, start: $0.start) })
-    details = details.filter { live.contains($0.key) }
-    cwds = cwds.filter { live.contains($0.key) }
     var all: [Int32: Proc] = [:]
     all.reserveCapacity(entries.count)
+    var live: [Key: (proc: Proc, comm: String)] = [:]
     for e in entries where e.pid > 0 {
       let key = Key(pid: e.pid, start: e.start)
       var comm = e.comm
       let name = Native.cString(&comm)
-      if e.uid == me, e.status != 5 {
-        guard let d = details[key] ?? Native.detail(e.pid) else { continue }
-        details[key] = d
-        let cwd = cwds[key] ?? Native.cwd(e.pid)
-        cwds[key] = cwd
-        var p = Proc(
-          pid: e.pid, parent: e.ppid, start: e.start, unique: d.unique, version: d.version,
-          parentUnique: d.parentUnique, pgid: e.pgid, uid: e.uid, path: d.path, cwd: cwd,
-          args: d.args)
-        p.status = e.status
-        if p.comm.isEmpty { p.comm = name }
-        all[e.pid] = p
-      } else {
-        var p = Proc(
-          pid: e.pid, parent: e.ppid, start: e.start, unique: 0, version: 0, pgid: e.pgid,
-          uid: e.uid, path: "", cwd: "", args: [])
-        p.status = e.status
-        p.comm = name
-        all[e.pid] = p
-      }
+      // exec keeps the PID and start time but replaces the program, so a changed name means the
+      // cached record describes something that no longer exists.
+      let cached = known[key].flatMap { $0.comm == name ? $0.proc : nil }
+      guard var p = cached ?? Native.proc(e, me: me) else { continue }
+      p.parent = e.ppid
+      p.pgid = e.pgid
+      p.status = e.status
+      p.foreground = e.foreground != 0
+      p.cpu = 0
+      live[key] = (p, name)
+      all[e.pid] = p
     }
+    known = live
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
-    let listeners = verify(try Native.listeners(), all)
+    let listeners = Policy.owners(try Native.sockets(), in: all)
     let elapsed = begin.timeIntervalSince(time)
     for (id, p) in all where p.uid == me {
       if let old = previous[id], old.identity == p.identity, old.parent != 1, p.parent == 1,
@@ -244,6 +212,14 @@ public final class Scanner {
     {
       workloads = Policy.workloads(all, listeners: listeners, labels: fresh, orphans: orphans)
     }
+    // An exec into a program of the same name is only visible in the process generation. Check it
+    // for what is on display, where a stale record would mislabel a row or refuse a Stop.
+    var stale = false
+    for p in workloads.flatMap(\.members) where Native.generation(p.pid) != p.identity.version {
+      known[Key(pid: p.pid, start: p.identity.start)] = nil
+      stale = true
+    }
+    if stale, retry { return try scan(retry: false) }
     // Resource sampling only for processes that are displayed.
     var sampled: [Int32: Proc] = [:]
     for index in workloads.indices {
@@ -265,62 +241,32 @@ public final class Scanner {
         }
         workloads[index].members[m] = p
         if p.pid == workloads[index].root.pid { workloads[index].root = p }
+        if p.pid == workloads[index].lead.pid { workloads[index].lead = p }
       }
-      workloads[index].branch = Git.branch(for: workloads[index].root.cwd)
       let w = workloads[index]
       var samples = history[w.id] ?? []
       samples.append(Sample(cpu: w.cpu, memory: w.memory))
       if samples.count > 60 { samples.removeFirst(samples.count - 60) }
       history[w.id] = samples
       workloads[index].history = samples
-      // Directories can change after launch; refresh the displayed root's each scan.
-      let key = Key(pid: w.root.pid, start: w.root.identity.start)
-      let cwd = Native.cwd(w.root.pid)
-      if !cwd.isEmpty { cwds[key] = cwd }
+      // Directories can change after launch; reread the ones on display for the next scan.
+      for p in [w.root, w.lead] {
+        let cwd = Native.cwd(p.pid)
+        if !cwd.isEmpty { known[Key(pid: p.pid, start: p.identity.start)]?.proc.cwd = cwd }
+      }
     }
-    history = history.filter { entry in workloads.contains { $0.id == entry.key } }
-    for (pid, p) in sampled { all[pid] = p }
+    let shown = Set(workloads.map(\.id))
+    history = history.filter { shown.contains($0.key) }
+    for (pid, p) in sampled {
+      all[pid] = p
+      known[Key(pid: pid, start: p.identity.start)]?.proc.memory = p.memory
+      known[Key(pid: pid, start: p.identity.start)]?.proc.cpuTime = p.cpuTime
+    }
     previous = all
     time = begin
     return Scan(
       workloads: workloads, listeners: listeners, count: all.count,
       duration: Date().timeIntervalSince(begin), date: Date())
-  }
-
-  /// The socket table names the last process that touched each socket. Confirm ownership through
-  /// the process's descriptors the first time a socket is seen, and repair inherited sockets.
-  private func verify(_ listeners: [Listener], _ all: [Int32: Proc]) -> [Listener] {
-    let me = getuid()
-    var seen = Set<SocketKey>()
-    let result = listeners.map { l -> Listener in
-      let key = SocketKey(socket: l.socket, port: l.port, reported: l.pid)
-      seen.insert(key)
-      guard l.uid == me else { return l }
-      if let pid = verifiedSockets[key], all[pid] != nil {
-        var v = l
-        v.pid = pid
-        return v
-      }
-      var candidates = [l.pid]
-      if let p = all[l.pid] {
-        candidates += all.values.filter { $0.parent == l.pid || $0.pid == p.parent }.map(\.pid)
-      }
-      candidates += all.values.filter { $0.uid == me }.sorted {
-        $0.identity.start > $1.identity.start
-      }.map(\.pid)
-      var checked = Set<Int32>()
-      for pid in candidates where checked.insert(pid).inserted {
-        if Native.ownsSocket(pid, l.socket) {
-          verifiedSockets[key] = pid
-          var v = l
-          v.pid = pid
-          return v
-        }
-      }
-      return l
-    }
-    verifiedSockets = verifiedSockets.filter { seen.contains($0.key) }
-    return result
   }
 }
 

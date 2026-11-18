@@ -1,200 +1,126 @@
 import Foundation
 
+/// Decides what is shown and what may be signalled.
+///
+/// Discovery is by structure, not by a list of known programs. Every process of this user has a
+/// role: part of macOS, part of an application, a coding agent, a terminal session, or none of
+/// those. A process with none of those roles is the user's own work, and the tree it belongs to is
+/// a workload whether or not Bollard recognises what it runs.
 public enum Policy {
-  static let shells: Set<String> = ["sh", "bash", "zsh", "fish", "dash"]
-  static let agents: Set<String> = [
-    "codex", "claude", "aider", "hermes", "gemini", "opencode", "cursor-agent",
+  static let shells: Set<String> = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "nu"]
+  /// Coding agents by executable, module or package name.
+  static let agents: [String: String] = [
+    "claude": "Claude Code", "@anthropic-ai/claude-code": "Claude Code", "codex": "Codex",
+    "@openai/codex": "Codex", "gemini": "Gemini CLI", "@google/gemini-cli": "Gemini CLI",
+    "opencode": "OpenCode", "opencode-ai": "OpenCode", "aider": "Aider",
+    "cursor-agent": "Cursor Agent", "hermes": "Hermes", "hermes.cli": "Hermes",
   ]
-  static let sessions: Set<String> = ["ssh", "sshd", "tmux", "screen", "login", "launchd", "sudo"]
+  static let sessions: Set<String> = [
+    "tmux", "screen", "zellij", "login", "sshd", "sudo", "su", "launchd", "mosh-server", "script",
+  ]
+  /// Full-screen and prompt programs. Hidden only while they hold a terminal's foreground, where
+  /// they are something the user is looking at rather than something left running.
+  static let interactive: Set<String> = [
+    "vim", "nvim", "vi", "nano", "emacs", "hx", "micro", "less", "more", "man", "most", "bat",
+    "htop", "top", "btop", "btm", "glances", "lazygit", "tig", "gitui", "fzf", "k9s", "lazydocker",
+    "ranger", "nnn", "yazi", "mc", "psql", "mysql", "sqlite3", "redis-cli", "mongosh", "pgcli",
+    "lldb", "gdb", "irb", "pry", "ipython", "bpython", "git", "gh",
+  ]
   static let terminalApps = [
     "/Terminal.app/", "/iTerm.app/", "/Ghostty.app/", "/Warp.app/", "/ChatGPT.app/",
     "/Visual Studio Code.app/", "/Zed.app/", "/Cursor.app/", "/Xcode.app/", "/Claude.app/",
   ]
-  static let toolPatterns = [
-    "mcp", "language-server", "languageserver", "tsserver", "ipykernel", "jupyter-lsp",
-    "gradledaemon", "kotlincompiledaemon", "node_repl", "trusted-worker.js", "hermes.cli",
-    "codex app-server", "resource-tracker", "multiprocessing.resource_tracker", "copilot",
-  ]
+  /// A workload with no socket has to live this long before it is listed, so one-shot commands
+  /// never flicker through the panel.
+  public static let settleTime: Double = 3
+
+  /// Bollard's own ancestors: the shell, terminal or agent it was started from.
+  static let ownAncestors: Set<Int32> = {
+    let parents = Dictionary(
+      (try? Native.table())?.map { ($0.pid, $0.ppid) } ?? [], uniquingKeysWith: { a, _ in a })
+    var result = Set<Int32>()
+    var pid = getppid()
+    while pid > 1, result.insert(pid).inserted, let next = parents[pid] { pid = next }
+    return result
+  }()
+
+  enum Role: Equatable {
+    case system, session, user
+    case app(String)
+    case agent(String)
+  }
+
+  static func systemPath(_ path: String) -> Bool {
+    ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/"].contains {
+      path.hasPrefix($0)
+    }
+  }
+  /// The agent this process is, by its executable, its first argument or the package it runs.
+  package static func agent(_ p: Proc, _ program: Program? = nil) -> String? {
+    // The Claude desktop application shares its name with the agent it embeds.
+    if let outer = p.outerBundle, outer.hasPrefix("/Applications/"),
+      p.path.hasPrefix(outer + "/Contents/MacOS/")
+    {
+      return nil
+    }
+    if let name = agents[p.base] ?? agents[p.argName] { return name }
+    guard
+      let program = program
+        ?? (Program.runtimes.contains { p.base.hasPrefix($0.prefix) } ? Program(p) : nil),
+      program.named
+    else { return nil }
+    return agents[program.target]
+  }
+  /// Why a terminal-bound process is part of a session rather than a workload, or nil.
+  static func session(_ p: Proc, _ program: Program) -> String? {
+    if p.named(sessions) || sessions.contains(program.target) {
+      return "a login or session process"
+    }
+    if shells.contains(p.base), program.repl { return "an interactive shell" }
+    if p.base == "ssh", !Kinds.tunnel(p) { return "a remote session" }
+    if p.foreground, program.repl || interactive.contains(program.target) {
+      return "an interactive terminal program"
+    }
+    return nil
+  }
+  static func role(_ p: Proc, in all: [Int32: Proc]) -> (role: Role, program: Program?) {
+    if p.pid <= 1 || p.base == "launchd" { return (.system, nil) }
+    // Bollard and whatever it was started from are the observer, never the observed.
+    if p.pid == getpid() || ownAncestors.contains(p.pid) {
+      return (agent(p).map(Role.agent) ?? .session, nil)
+    }
+    if systemPath(p.path) || p.path.contains(".xpc/Contents/MacOS/") { return (.system, nil) }
+    if let name = agent(p) { return (.agent(name), nil) }
+    if let bundle = bundle(p, in: all) { return (.app(bundle), nil) }
+    let program = Program(p)
+    return (session(p, program) != nil ? .session : .user, program)
+  }
 
   /// Why a process is never signalled from Bollard, or nil when it may be.
   public static func protection(_ p: Proc) -> String? {
     if p.pid <= 1 || p.base == "launchd" { return "launchd" }
     if p.pid == getpid() { return "Bollard itself" }
-    if p.uid != getuid() { return "owned by another user" }
-    let path = p.path.lowercased()
-    if path.hasPrefix("/system/") || path.hasPrefix("/usr/libexec/") || path.hasPrefix("/usr/sbin/")
-      || path.hasPrefix("/sbin/") || path.hasPrefix("/library/apple/")
-    {
-      return "a macOS system process"
-    }
-    if terminalApps.contains(where: { p.path.has($0) }), !p.path.has(".framework/") {
+    if ownAncestors.contains(p.pid) { return "the process Bollard is running under" }
+    if p.uid != getuid() { return "a process owned by another user" }
+    if systemPath(p.path) { return "a macOS system process" }
+    if agent(p) != nil { return nil }
+    if terminalApps.contains(where: { p.path.contains($0) }), !p.path.contains(".framework/") {
       return "a terminal or editor"
     }
-    if p.named(agents) { return "a coding agent" }
-    if p.named(sessions) { return "a login or session process" }
-    let text = p.text
-    if text.has("org.prismlauncher.entrypoint") || text.has("net.minecraft.client")
-      || text.has("knotclient")
-    {
+    if p.args.contains(where: {
+      $0.contains("org.prismlauncher.EntryPoint") || $0.contains("net.minecraft.client")
+        || $0.contains("KnotClient")
+    }) {
       return "a game client"
     }
-    if shells.contains(p.base), interactiveShell(p) { return "an interactive shell" }
-    if ["hermes.cli", "aider"].contains(where: { text.has($0) }) && p.base.hasPrefix("python") {
-      return "a coding agent"
-    }
-    return nil
+    return session(p, Program(p))
   }
   public static func protected(_ p: Proc) -> Bool { protection(p) != nil }
-  /// Helpers that belong to an agent, editor or notebook. Visible, but stopped from their owner.
-  public static func tool(_ p: Proc) -> Bool {
-    let text = p.text
-    return toolPatterns.contains { text.has($0) }
-  }
-  static func interactiveShell(_ p: Proc) -> Bool {
-    shells.contains(p.base)
-      && !p.args.dropFirst().contains(where: { $0.hasPrefix("-") && $0.contains("c") })
-  }
-  static func simpleWrapper(_ p: Proc) -> Bool {
-    guard shells.contains(p.base), p.args.count == 3, ["-c", "-lc"].contains(p.args[1]) else {
-      return false
-    }
-    let s = p.args[2]
-    return !s.contains(where: { ";|\n`$<>(){}".contains($0) })
-  }
-  /// Package-manager and shell wrappers that exist only to run their single child.
-  static func wrapper(_ p: Proc) -> Bool {
-    if simpleWrapper(p) { return true }
-    if p.base == "node", p.args.count >= 2 {
-      let script = URL(fileURLWithPath: p.args[1]).lastPathComponent
-      if ["npm-cli.js", "pnpm.cjs", "pnpm.js", "yarn.js"].contains(script), p.args.count >= 3,
-        ["run", "start", "dev", "exec", "run-script"].contains(p.args[2])
-      {
-        return true
-      }
-      if ["tsx", "ts-node", "nodemon", "turbo", "concurrently"].contains(script) { return true }
-      if p.has("tsx/dist/preflight") || p.has("ts-node/") { return true }
-    }
-    let a = p.text
-    if [
-      "npm", "pnpm", "yarn", "bun", "bunx", "npx", "uv", "uvx", "poetry", "pipenv", "cargo", "make",
-    ].contains(p.base)
-      && (a.has(" run") || a.has(" dev") || a.has(" start") || a.has(" exec") || a.has(" x "))
-    {
-      return true
-    }
-    return ["caffeinate", "nice", "time", "env", "nohup", "setsid", "stdbuf"].contains(p.base)
-  }
-  /// A parent that will not respawn its child when the child exits.
-  static func launchBoundary(_ p: Proc) -> Bool {
-    if p.pid == 1 || protected(p) || wrapper(p) { return true }
-    if shells.contains(p.base), p.args.count == 3 {
-      let command = p.args[2]
-      if command.contains("while") || command.contains("until") || command.contains("for ") {
-        return false
-      }
-      return !command.contains(where: { "|;`$<>(){}".contains($0) })
-    }
-    return false
-  }
 
-  public static func kind(_ p: Proc, listening: Bool) -> Kind? {
-    let s = p.text
-    func k(_ name: String, _ icon: String = "terminal", _ web: Bool = true, _ bg: Bool = false)
-      -> Kind
-    { Kind(name: name, icon: icon, web: web, background: bg) }
-    if s.has("net.minecraft.server") || s.has("fabric-server") || s.has("paper-")
-      || (p.base == "java" && s.has("nogui") && s.has(".jar"))
-    {
-      return k("Minecraft", "cube", false)
-    }
-    if p.base == "ollama" || s.hasPrefix("ollama ") { return k("Ollama", "sparkles", false) }
-    if s.has("llama-server") || s.has("mlx_lm.server") || s.has("vllm")
-      || s.has("lms server") || s.has("lm studio")
-    {
-      return k("AI service", "sparkles")
-    }
-    if s.has("jupyter") && (s.has("lab") || s.has("notebook") || s.has("server")) {
-      return k("Jupyter", "book.closed")
-    }
-    if s.has("next-server") || s.has("next dev") || s.has("next start") || s.has("/next/") {
-      return k("Next.js", "globe")
-    }
-    if s.has("nuxt") { return k("Nuxt", "globe") }
-    if s.has("remix") { return k("Remix", "globe") }
-    if s.has("astro") { return k("Astro", "globe") }
-    if s.has("svelte") { return k("SvelteKit", "globe") }
-    if s.has("vite") { return k("Vite", "bolt") }
-    if s.has("webpack") { return k("Webpack", "shippingbox") }
-    if s.has("storybook") { return k("Storybook", "book") }
-    if s.has("wrangler") || p.base == "workerd" { return k("Wrangler", "cloud") }
-    if s.has("uvicorn") { return k("Uvicorn", "network") }
-    if s.has("gunicorn") { return k("Gunicorn", "network") }
-    if s.has("hypercorn") { return k("Hypercorn", "network") }
-    if s.has("http.server") { return k("Python HTTP", "globe") }
-    if s.has("flask") { return k("Flask", "network") }
-    if s.has("manage.py runserver") { return k("Django", "network") }
-    if s.has("fastapi") { return k("FastAPI", "network") }
-    if s.has("streamlit") { return k("Streamlit", "chart.bar") }
-    if s.has("rails ") || s.has("puma") { return k("Rails", "network") }
-    if s.has("php artisan") || s.has("php -s") { return k("PHP", "network") }
-    if [
-      "postgres", "redis-server", "mysqld", "mongod", "mariadbd", "clickhouse", "meilisearch",
-      "typesense",
-    ].contains(p.base) {
-      let names = [
-        "postgres": "PostgreSQL", "redis-server": "Redis", "mysqld": "MySQL", "mongod": "MongoDB",
-        "mariadbd": "MariaDB", "clickhouse": "ClickHouse", "meilisearch": "Meilisearch",
-        "typesense": "Typesense",
-      ]
-      return k(names[p.base] ?? p.base, "externaldrive", false)
-    }
-    if ["nginx", "caddy", "httpd", "traefik"].contains(p.base) {
-      return k(p.base.capitalized, "globe")
-    }
-    if s.has("--watch") || s.has("nodemon") || s.has("watchfiles") || s.has("watchexec")
-      || s.has("chokidar")
-    {
-      return k("Watcher", "eye", false, true)
-    }
-    if s.has("celery") || s.has("sidekiq") || s.has("rq worker") || s.has("bullmq")
-      || s.has("temporal")
-    {
-      return k("Worker", "gearshape.2", false, true)
-    }
-    if s.has("cloudflared") || s.has("ngrok") || s.has("tailscale serve") {
-      return k("Tunnel", "arrow.left.arrow.right", false, true)
-    }
-    let runtime = [
-      "node": "Node.js", "bun": "Bun", "deno": "Deno", "python": "Python", "python3": "Python",
-      "java": "Java", "ruby": "Ruby", "php": "PHP", "go": "Go", "dotnet": ".NET",
-      "elixir": "Elixir", "beam.smp": "Erlang",
-    ]
-    let language = runtime.first { p.base.hasPrefix($0.key) }?.value
-    if listening {
-      return k(language ?? p.comm, "network", true)
-    }
-    // Explicit user script, not an arbitrary process with a familiar executable.
-    if language != nil,
-      p.args.dropFirst().contains(where: {
-        $0.hasSuffix(".py") || $0.hasSuffix(".js") || $0.hasSuffix(".mjs") || $0.hasSuffix(".ts")
-          || $0.hasSuffix(".rb")
-      }), !p.cwd.isEmpty, !p.cwd.contains("/Library/"), !s.has("node_modules/")
-    {
-      return k("Script", "terminal", false, true)
-    }
-    return nil
-  }
-
-  public static func descendants(_ root: Int32, _ all: [Int32: Proc]) -> [Proc] {
-    let children = Dictionary(grouping: all.values, by: \.parent)
-    var ids: Set<Int32> = []
-    var pending = [root]
-    while let id = pending.popLast() {
-      if ids.insert(id).inserted { pending.append(contentsOf: (children[id] ?? []).map(\.pid)) }
-    }
-    return ids.compactMap { all[$0] }.sorted { $0.pid < $1.pid }
-  }
-  /// The root's tree split into what Stop signals and what it leaves alone.
+  /// The processes a Stop signals, and the protected ones inside the tree it leaves alone.
+  ///
+  /// For an agent that is the agent and the helpers it started directly, such as MCP servers. What
+  /// the agent ran through a shell is a workload of its own and keeps running.
   public static func killSet(_ root: Int32, _ all: [Int32: Proc]) -> (
     members: [Proc], excluded: [Proc]
   ) {
@@ -209,9 +135,17 @@ public enum Policy {
     var pending = [root]
     while let id = pending.popLast() {
       guard seen.insert(id).inserted, let p = all[id] else { continue }
-      if id != root, protected(p) {
-        excluded.append(p)
-        continue
+      let isAgent = agent(p) != nil
+      if id != root {
+        if protected(p) {
+          excluded.append(p)
+          continue
+        }
+        // An agent inside someone else's tree is its own row. Inside an agent's tree, only its
+        // own subprocesses and direct helpers belong to it.
+        let parentIsAgent = all[p.parent].map { agent($0) != nil } ?? false
+        if isAgent, !parentIsAgent { continue }
+        if parentIsAgent, !isAgent, shells.contains(p.base) { continue }
       }
       members.append(p)
       pending.append(contentsOf: (children[id] ?? []).map(\.pid))
@@ -219,117 +153,165 @@ public enum Policy {
     return (members.sorted { $0.pid < $1.pid }, excluded.sorted { $0.pid < $1.pid })
   }
 
+  /// One listener per socket. A socket inherited across fork is held by a whole family; it belongs
+  /// to the holder whose parent does not hold it, which is the process that opened it.
+  public static func owners(_ held: [Listener], in all: [Int32: Proc]) -> [Listener] {
+    Dictionary(grouping: held, by: \.socket).values.compactMap { holders in
+      let pids = Set(holders.map(\.pid))
+      let top = holders.filter { !pids.contains(all[$0.pid]?.parent ?? -1) }
+      return (top.isEmpty ? holders : top).min { $0.pid < $1.pid }
+    }.sorted { ($0.port, $0.address, $0.path, $0.pid) < ($1.port, $1.address, $1.path, $1.pid) }
+  }
+
   public static func workloads(
     _ all: [Int32: Proc], listeners: [Listener], labels: [Int32: String] = [:],
-    orphans: Set<Identity> = []
+    orphans: Set<Identity> = [], now: Double = Date().timeIntervalSince1970,
+    checkout: (String) -> Checkout? = Git.checkout
   ) -> [Workload] {
     let me = getuid()
-    var byPid: [Int32: [Listener]] = [:]
-    for l in listeners { byPid[l.pid, default: []].append(l) }
+    var sockets: [Int32: [Listener]] = [:]
+    for l in listeners { sockets[l.pid, default: []].append(l) }
     let children = Dictionary(grouping: all.values, by: \.parent)
-    let childCounts = children.mapValues(\.count)
+    var roles: [Int32: Role] = [:]
+    var programs: [Int32: Program] = [:]
+    for p in all.values where p.uid == me && !p.zombie {
+      let found = role(p, in: all)
+      roles[p.pid] = found.role
+      programs[p.pid] = found.program
+    }
+    func isAgent(_ pid: Int32) -> Bool {
+      if case .agent = roles[pid] { return true }
+      return false
+    }
+    func sorted(_ listeners: [Listener]) -> [Listener] {
+      Array(Set(listeners)).sorted {
+        ($0.transport.rawValue, $0.port, $0.address, $0.path) < (
+          $1.transport.rawValue, $1.port, $1.address, $1.path
+        )
+      }
+    }
     var result: [Identity: Workload] = [:]
-    for p in all.values.sorted(by: { $0.pid < $1.pid }) where !p.zombie {
-      let own = byPid[p.pid] ?? []
-      let listening = !own.isEmpty
-      if p.uid != me {
-        guard listening else { continue }
-        result[p.identity] = Workload(
-          root: p, members: [], excluded: [], kind: Kind(name: p.comm, icon: "lock", web: false),
-          name: p.comm.isEmpty ? "PID \(p.pid)" : p.comm, listeners: own,
-          provenance: p.uid == 0 ? "root" : "user \(p.uid)", origin: "System", orphan: false,
-          section: .system,
-          cautions: [], blocked: "Owned by another user.", launchdLabel: nil)
-        continue
-      }
-      let type: Kind
-      if let reason = protection(p) {
-        guard listening else { continue }
-        type = Kind(name: p.comm, icon: "lock", web: false)
+    var userRoots = Set<Int32>()
+
+    for p in all.values.sorted(by: { $0.pid < $1.pid }) {
+      guard let role = roles[p.pid] else { continue }
+      let tcp = (sockets[p.pid] ?? []).filter { $0.transport == .tcp }
+      switch role {
+      case .user:
+        var root = p
+        var seen: Set<Int32> = [p.pid]
+        while let parent = all[root.parent], roles[parent.pid] == .user,
+          seen.insert(parent.pid).inserted
+        {
+          root = parent
+        }
+        // Started directly by an agent, not through its shell: a helper, listed with the agent.
+        if isAgent(root.parent), !shells.contains(root.base) { continue }
+        userRoots.insert(root.pid)
+
+      case .agent(let name):
+        guard !isAgent(p.parent) else { continue }
+        let set = killSet(p.pid, all, children: children)
+        let helpers = (children[p.pid] ?? []).filter {
+          roles[$0.pid] == .user && !shells.contains($0.base)
+        }
+        let place = project(p, program: nil, label: nil, checkout: checkout)
         var row = Workload(
-          root: p, members: [], excluded: [], kind: type,
-          name: bundle(p, in: all).map(appName) ?? p.comm,
-          listeners: own, provenance: "", origin: origin(of: p, in: all, labels: labels),
-          orphan: false,
-          section: bundle(p, in: all) != nil && !p.path.hasPrefix("/System/") ? .apps : .system,
-          cautions: [], blocked: "Bollard never quits \(reason).", launchdLabel: labels[p.pid])
-        row.provenance = provenance(of: p, in: all, labels: labels)
-        result[p.identity] = row
-        continue
-      }
-      if tool(p) {
-        guard listening else { continue }
-        let row = Workload(
-          root: p, members: [], excluded: [],
-          kind: Kind(name: "Tool", icon: "wrench.and.screwdriver", web: false),
-          name: URL(fileURLWithPath: p.cwd).lastPathComponent, listeners: own,
+          root: p, members: set.members, excluded: set.excluded,
+          kind: Kind(name: name, icon: "sparkles"), name: place.name,
+          detail: helpers.isEmpty
+            ? name : "\(helpers.count) helper\(helpers.count == 1 ? "" : "s")",
+          listeners: sorted(set.members.flatMap { sockets[$0.pid] ?? [] }),
           provenance: provenance(of: p, in: all, labels: labels),
-          origin: origin(of: p, in: all, labels: labels), orphan: false, section: .system,
-          cautions: [],
-          blocked: "A helper owned by an agent, editor or notebook. Stop it from its owner.",
-          launchdLabel: labels[p.pid])
+          origin: origin(of: p, in: all, labels: labels), orphan: false, section: .agents,
+          cautions: [
+            "Ends the agent session and the helpers it started. Servers it launched keep running."
+          ],
+          blocked: protection(p).map { "Bollard never quits \($0)." }, launchdLabel: labels[p.pid])
+        row.branch = place.branch
         result[p.identity] = row
-        continue
-      }
-      if let bundle = bundle(p, in: all) {
-        guard listening else { continue }
+
+      case .app(let bundle):
+        guard !tcp.isEmpty else { continue }
         // Promote to the application's main process so one row owns every helper's port.
         var root = p
         while let parent = all[root.parent], parent.outerBundle == bundle, !protected(parent) {
           root = parent
         }
-        let set = killSet(root.pid, all, children: children)
-        var row = Workload(
+        let blocked = protection(root)
+        let set =
+          blocked == nil
+          ? killSet(root.pid, all, children: children) : (members: [Proc](), excluded: [Proc]())
+        let own = set.members.flatMap { sockets[$0.pid] ?? [] }.filter { $0.transport == .tcp }
+        result[root.identity] = Workload(
           root: root, members: set.members, excluded: set.excluded,
           kind: Kind(name: "App", icon: "app.dashed", web: true), name: appName(bundle),
-          listeners: set.members.flatMap { byPid[$0.pid] ?? [] },
+          listeners: sorted((result[root.identity]?.listeners ?? []) + own + tcp),
           provenance: provenance(of: root, in: all, labels: labels),
-          origin: origin(of: root, in: all, labels: labels),
-          orphan: false, section: .apps, cautions: [], blocked: nil, launchdLabel: labels[root.pid])
-        if let existing = result[root.identity] {
-          row.listeners = existing.listeners + row.listeners
+          origin: origin(of: root, in: all, labels: labels), orphan: false,
+          section: bundle.hasPrefix("/System/") ? .system : .apps, cautions: [],
+          blocked: blocked.map { "Bollard never quits \($0)." }, launchdLabel: labels[root.pid])
+
+      case .system, .session:
+        guard !tcp.isEmpty else { continue }
+        result[p.identity] = Workload(
+          root: p, members: [], excluded: [], kind: Kind(name: p.comm, icon: "lock"), name: p.comm,
+          listeners: sorted(tcp), provenance: provenance(of: p, in: all, labels: labels),
+          origin: origin(of: p, in: all, labels: labels), orphan: false, section: .system,
+          cautions: [],
+          blocked: "Bollard never quits \(protection(p) ?? "a macOS system process").",
+          launchdLabel: labels[p.pid])
+      }
+    }
+
+    let home = NSHomeDirectory()
+    for pid in userRoots.sorted() {
+      guard let root = all[pid] else { continue }
+      let set = killSet(pid, all, children: children)
+      let held = sorted(set.members.flatMap { sockets[$0.pid] ?? [] })
+      let reachable = held.contains { $0.transport != .unix }
+      let label = labels[pid]
+      let apple = label.map { $0.hasPrefix("com.apple.") || $0.hasPrefix("com.openssh.") } ?? false
+      if !reachable {
+        // Quiet trees that are not the user's own work: one-shot commands, Apple's launch agents
+        // and the background helpers applications install under a Library folder.
+        if now - Double(root.identity.start) / 1e6 < settleTime { continue }
+        // Started directly by an application: its helper, such as an editor's language server.
+        if case .app = roles[root.parent], !shells.contains(root.base) { continue }
+        if apple || root.path.hasPrefix("/Library/") || root.path.hasPrefix(home + "/Library/") {
+          continue
         }
-        row.listeners = Array(Set(row.listeners)).sorted {
-          ($0.port, $0.address) < ($1.port, $1.address)
+      }
+      // Look through wrappers to the process that does the work.
+      var lead = root
+      while programs[lead.pid]?.wrapper == true {
+        let next = (children[lead.pid] ?? []).filter { roles[$0.pid] == .user }
+        guard next.count == 1 else { break }
+        lead = next[0]
+      }
+      let program = programs[lead.pid] ?? Program(lead)
+      var kind = Kinds.known(program, lead)
+      if kind == nil {
+        // A script or wrapper that fans out: name the tree after a member that is recognised,
+        // a listening one first. Utilities that only keep a job company do not name it.
+        let recognised = set.members.compactMap { member -> (Proc, Kind)? in
+          guard let known = programs[member.pid].flatMap({ Kinds.known($0, member) }),
+            !["Keep awake", "Log tail"].contains(known.name)
+          else { return nil }
+          return (member, known)
         }
-        result[root.identity] = row
-        continue
+        kind = (recognised.first { !(sockets[$0.0.pid] ?? []).isEmpty } ?? recognised.first)?.1
       }
-      guard let detected = kind(p, listening: listening) else { continue }
-      type = detected
-      var root = p
-      var seen: Set<Int32> = [p.pid]
-      while let parent = all[root.parent], !seen.contains(parent.pid), !protected(parent),
-        wrapper(parent), parent.cwd == root.cwd || parent.cwd.isEmpty, childCounts[parent.pid] == 1
-      {
-        seen.insert(parent.pid)
-        root = parent
-      }
-      if let parent = all[root.parent], Controllers.match(parent) != nil { root = parent }
-      let set = killSet(root.pid, all, children: children)
-      let memberListeners = Array(Set(set.members.flatMap { byPid[$0.pid] ?? [] })).sorted {
-        ($0.port, $0.address) < ($1.port, $1.address)
-      }
-      if memberListeners.isEmpty && !type.background { continue }
-      if type.name == "Script",
-        set.members.contains(where: { $0.pid != root.pid && !(byPid[$0.pid] ?? []).isEmpty })
-      {
-        continue
-      }
-      let label = labels[root.pid]
+      var type = kind ?? Kinds.fallback(program, lead)
+      if kind == nil, held.contains(where: { $0.transport == .tcp }) { type.web = true }
+      let place = project(lead, program: program, label: label, checkout: checkout)
       let orphan = orphans.contains(root.identity) && root.parent == 1 && label == nil
-      let name = URL(fileURLWithPath: root.cwd).lastPathComponent
       var cautions: [String] = []
       if let label {
         cautions.append(
           label.hasPrefix("homebrew.mxcl.")
             ? "Homebrew service \(label.dropFirst(14)). Stopping it with brew keeps it from restarting."
             : "Managed by launchd as \(label). launchd may restart it; Unload stops it for good.")
-      } else if let parent = all[root.parent], root.parent != 1, !launchBoundary(parent) {
-        let command = parent.args.joined(separator: " ")
-        cautions.append(
-          "Its parent \(parent.base) (PID \(parent.pid)) keeps running and may restart it: \(command.prefix(80))"
-        )
       }
       if !set.excluded.isEmpty {
         cautions.append(
@@ -344,29 +326,22 @@ public enum Policy {
         cautions.append("Stop lets the server save on shutdown. Force Quit skips saving.")
       }
       var row = Workload(
-        root: root, members: set.members, excluded: set.excluded, kind: type,
-        name: name.isEmpty || name == "/" ? type.name.lowercased() : name,
-        listeners: memberListeners,
+        root: root, members: set.members, excluded: set.excluded, kind: type, name: place.name,
+        detail: program.summary, lead: lead, listeners: held,
         provenance: provenance(of: root, in: all, labels: labels),
         origin: origin(of: root, in: all, labels: labels), orphan: orphan,
-        section: memberListeners.isEmpty ? .background : .servers, cautions: cautions, blocked: nil,
-        launchdLabel: label)
+        section: apple ? .system : reachable ? .servers : .background, cautions: cautions,
+        blocked: nil, launchdLabel: label)
+      row.branch = place.branch
       row.controller = controller
       if let controller { row.provenance = controller.label }
       if orphan { row.provenance = "Orphaned · observed parent exit" }
-      if type.name == "Ollama" { row.name = "ollama" }
-      if type.name == "Minecraft" {
-        row.name = name.replacingOccurrences(
-          of: "-[0-9]{10,}$", with: "", options: .regularExpression
-        )
-        .replacingOccurrences(of: "-", with: " ")
-      }
-      if let existing = result[root.identity], !existing.kind.background { continue }
       result[root.identity] = row
     }
+
     // Remove nested rows; the containing workload owns metrics and actions.
     let values = Array(result.values)
-    let order: [Lane: Int] = [.servers: 0, .background: 1, .apps: 2, .system: 3]
+    let order: [Lane: Int] = [.servers: 0, .background: 1, .agents: 2, .apps: 3, .system: 4]
     return values.filter { w in
       !values.contains { $0.id != w.id && $0.members.contains { $0.identity == w.id } }
     }.sorted {
@@ -375,6 +350,23 @@ public enum Policy {
       )
     }
   }
+
+  /// The project a process belongs to: its repository, else its directory, else the script's
+  /// folder for jobs launchd starts in `/`, else the launchd label or the program itself.
+  static func project(
+    _ p: Proc, program: Program?, label: String?, checkout: (String) -> Checkout?
+  ) -> (name: String, branch: String?) {
+    func placeless(_ directory: String) -> Bool {
+      directory.isEmpty || directory == "/" || directory == NSHomeDirectory()
+    }
+    var directory = p.cwd
+    if placeless(directory), let script = program?.script, script.hasPrefix("/") {
+      directory = URL(fileURLWithPath: script).deletingLastPathComponent().path
+    }
+    if let found = checkout(directory) { return (found.name, found.branch) }
+    if !placeless(directory) { return (URL(fileURLWithPath: directory).lastPathComponent, nil) }
+    return (label ?? program?.target ?? p.comm, nil)
+  }
   static func bundle(_ p: Proc, in all: [Int32: Proc]) -> String? {
     if let bundle = p.appBundle { return bundle }
     guard let outer = p.outerBundle, let parent = all[p.parent], parent.outerBundle == outer else {
@@ -382,65 +374,55 @@ public enum Policy {
     }
     return outer
   }
-  /// Coarse launcher identity for filtering: an agent name, an editor, Terminal, launchd or Detached.
+  static func appName(_ bundle: String) -> String {
+    String(URL(fileURLWithPath: bundle).lastPathComponent.dropLast(4))
+  }
+  static let launchers = [
+    ("Visual Studio Code.app", "VS Code"), ("Zed.app", "Zed"), ("Cursor.app", "Cursor"),
+    ("Xcode.app", "Xcode"), ("Terminal.app", "Terminal"), ("iTerm.app", "iTerm"),
+    ("Ghostty.app", "Ghostty"), ("Warp.app", "Warp"),
+  ]
+  /// The launcher a process is, if it is one: an agent, an editor or a terminal.
+  static func launcher(_ p: Proc) -> String? {
+    if let name = agent(p) { return name }
+    if p.path.contains("/ChatGPT.app/") { return "Codex" }
+    if p.path.contains("/Claude.app/") { return "Claude Code" }
+    return launchers.first { p.path.contains($0.0) }?.1
+  }
+  /// Who launched it, for the origin filter: an agent, an editor, a terminal, launchd or Detached.
   static func origin(of root: Proc, in all: [Int32: Proc], labels: [Int32: String]) -> String {
     if labels[root.pid] != nil { return "launchd" }
     var ancestor = root.parent
     var visited = Set<Int32>()
     var shell = false
     while let a = all[ancestor], visited.insert(ancestor).inserted {
-      if a.base.contains("codex") || a.path.has("ChatGPT.app") { return "Codex" }
-      if a.base == "claude" || a.argName == "claude" || a.path.has("/Claude.app/") {
-        return "Claude Code"
-      }
-      if a.named(agents) { return (agents.contains(a.base) ? a.base : a.argName).capitalized }
-      for (marker, name) in [
-        ("Visual Studio Code.app", "VS Code"), ("Zed.app", "Zed"), ("Cursor.app", "Cursor"),
-        ("Xcode.app", "Xcode"), ("Terminal.app", "Terminal"), ("iTerm.app", "iTerm"),
-        ("Ghostty.app", "Ghostty"), ("Warp.app", "Warp"),
-      ] where a.path.has(marker) {
-        return name
-      }
-      if shells.contains(a.base) { shell = true }
+      if let name = launcher(a) { return name }
+      if shells.contains(a.base) || a.named(sessions) { shell = true }
       ancestor = a.parent
+    }
+    // The parents are gone, but macOS still knows whose work this is.
+    if root.responsible != root.pid, let owner = all[root.responsible], let name = launcher(owner) {
+      return name
     }
     return shell ? "Terminal" : (root.parent == 1 ? "Detached" : "Other")
   }
-  static func appName(_ bundle: String) -> String {
-    String(URL(fileURLWithPath: bundle).lastPathComponent.dropLast(4))
-  }
+  /// The same lineage in words, for the detail view.
   static func provenance(of root: Proc, in all: [Int32: Proc], labels: [Int32: String]) -> String {
-    var provenance =
-      labels[root.pid].map { "launchd · \($0)" }
-      ?? (root.parent == 1 ? "Detached · launch origin unknown" : "Parent PID \(root.parent)")
-    var ancestor = root.parent
-    var visited = Set<Int32>()
-    while let a = all[ancestor], visited.insert(ancestor).inserted {
-      if a.base.contains("codex") || a.path.contains("ChatGPT.app") {
-        provenance = "Codex"
-        break
+    if let label = labels[root.pid] { return "launchd · \(label)" }
+    let origin = origin(of: root, in: all, labels: labels)
+    switch origin {
+    case "Detached": return "Detached · launch origin unknown"
+    case "Other": return "Parent PID \(root.parent)"
+    case "Terminal":
+      var ancestor = root.parent
+      var visited = Set<Int32>()
+      while let a = all[ancestor], visited.insert(ancestor).inserted {
+        if shells.contains(a.base) { return "Terminal · \(a.base)" }
+        ancestor = a.parent
       }
-      if a.base == "claude" || a.argName == "claude" || a.path.has("/Claude.app/") {
-        provenance = "Claude Code"
-        break
-      }
-      if a.named(agents) {
-        provenance = (agents.contains(a.base) ? a.base : a.argName).capitalized
-        break
-      }
-      if shells.contains(a.base) { provenance = "Terminal · \(a.base)" }
-      for (marker, name) in [
-        ("Terminal.app", "Terminal"), ("Visual Studio Code.app", "Visual Studio Code"),
-        ("Zed.app", "Zed"),
-        ("Cursor.app", "Cursor"), ("iTerm.app", "iTerm"), ("Ghostty.app", "Ghostty"),
-        ("Warp.app", "Warp"),
-        ("Xcode.app", "Xcode"),
-      ] where a.path.contains(marker) {
-        return provenance.hasPrefix("Terminal · ") && name == "Terminal" ? provenance : name
-      }
-      ancestor = a.parent
+      return origin
+    default: return origin
     }
-    return provenance
   }
 
   /// Confirms the workload still describes live processes and returns the current kill set,

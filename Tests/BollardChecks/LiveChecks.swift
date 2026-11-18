@@ -1,7 +1,18 @@
 import BollardCore
 import Foundation
 
-/// Creates its own disposable servers, stops them, and proves siblings and shells survive.
+private func spawn(_ path: String, _ arguments: [String], in directory: URL) throws -> Process {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: path)
+  process.currentDirectoryURL = directory
+  process.arguments = arguments
+  process.standardOutput = FileHandle.nullDevice
+  process.standardError = FileHandle.nullDevice
+  try process.run()
+  return process
+}
+
+/// Creates its own disposable servers, stops them, and proves siblings survive.
 func liveChecks() throws {
   let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
     "bollard-check-\(UUID().uuidString)")
@@ -15,21 +26,17 @@ func liveChecks() throws {
   signal.signal(signal.SIGTERM, signal.SIG_IGN)
   http.server.HTTPServer(('127.0.0.1', 0), http.server.BaseHTTPRequestHandler).serve_forever()
   """.write(to: stubborn, atomically: true, encoding: .utf8)
-  let shell = Process()
-  shell.executableURL = URL(fileURLWithPath: "/bin/zsh")
-  shell.currentDirectoryURL = dir
-  shell.arguments = [
-    "-c",
-    "/opt/homebrew/bin/node server.js & /opt/homebrew/bin/node server.js & /usr/bin/python3 stubborn.py & wait",
-  ]
-  shell.standardOutput = FileHandle.nullDevice
-  shell.standardError = FileHandle.nullDevice
-  try shell.run()
+  // Each server is its own child of this process, which Bollard treats as the observer: three
+  // sibling workloads under one parent that must survive all of them.
+  let servers = try [
+    ("/opt/homebrew/bin/node", "server.js"), ("/opt/homebrew/bin/node", "server.js"),
+    ("/usr/bin/python3", "stubborn.py"),
+  ].map { try spawn($0.0, [$0.1], in: dir) }
   var owned: [Proc] = []
   // A failed precondition skips `defer`, so clean up explicitly before every failure.
   func cleanup() {
     for p in owned { try? Native.signal(p, SIGKILL) }
-    if shell.isRunning { shell.terminate() }
+    for server in servers where server.isRunning { server.terminate() }
     try? FileManager.default.removeItem(at: dir)
   }
   func require(_ condition: Bool, _ message: @autoclosure () -> String, line: Int = #line) {
@@ -43,7 +50,7 @@ func liveChecks() throws {
   var rows: [Workload] = []
   for _ in 0..<100 {
     let scan = try scanner.scan()
-    rows = scan.workloads.filter { $0.root.parent == shell.processIdentifier }
+    rows = scan.workloads.filter { $0.root.parent == getpid() }
     owned = rows.flatMap(\.members)
     if rows.count == 3 && rows.allSatisfy({ !$0.ports.isEmpty }) { break }
     Thread.sleep(forTimeInterval: 0.2)
@@ -70,9 +77,8 @@ func liveChecks() throws {
   require(staleRejected, "Stale identity accepted")
   let stopped = try Controller.stop(a, .terminate)
   require(stopped.done && stopped.signalled.count == 1, "SIGTERM stops a node server")
-  require(Native.read(b.root.pid)?.identity == b.id, "Sibling was touched")
-  require(shell.isRunning, "Parent shell was touched")
-  let survivors = try Native.listeners()
+  require(try Native.snapshot()[b.root.pid]?.identity == b.id, "Sibling was touched")
+  let survivors = try Native.sockets()
   require(survivors.contains { $0.pid == b.root.pid }, "Sibling listener was lost")
   let ignored = try Controller.stop(python, .terminate)
   require(
@@ -80,14 +86,13 @@ func liveChecks() throws {
     "SIGTERM-ignoring server is reported as still running")
   let killed = try Controller.stop(python, .kill)
   require(killed.done, "SIGKILL ends it")
-  require(shell.isRunning, "Parent shell survived stop and force quit of its children")
   let forced = try Controller.stop(b, .kill)
   require(forced.done, "Force quit the second node server")
   var exitedRejected = false
   do { _ = try Controller.stop(b, .terminate) } catch { exitedRejected = true }
   require(exitedRejected, "Stopping an exited workload must fail")
   print(
-    "Live checks passed: three fixture servers; stale identity rejected; SIGTERM stop; SIGTERM-ignoring server reported, then force quit; siblings and shell survived"
+    "Live checks passed: three fixture servers; stale identity rejected; SIGTERM stop; SIGTERM-ignoring server reported, then force quit; siblings survived"
   )
 }
 
@@ -197,21 +202,12 @@ func serviceChecks() throws {
   let js = dir.appendingPathComponent("server.js")
   try "require('http').createServer((q,s)=>s.end('ok')).listen(0,'127.0.0.1');".write(
     to: js, atomically: true, encoding: .utf8)
-  let shell = Process()
-  shell.executableURL = URL(fileURLWithPath: "/bin/zsh")
-  shell.currentDirectoryURL = dir
-  shell.arguments = [
-    "-c",
-    "/opt/homebrew/bin/node server.js & /opt/homebrew/bin/node server.js & /opt/homebrew/bin/node server.js & wait",
-  ]
-  shell.standardOutput = FileHandle.nullDevice
-  shell.standardError = FileHandle.nullDevice
-  try shell.run()
-  defer { if shell.isRunning { shell.terminate() } }
+  let servers = try (0..<3).map { _ in try spawn("/opt/homebrew/bin/node", ["server.js"], in: dir) }
+  defer { for server in servers where server.isRunning { server.terminate() } }
   var rows: [Workload] = []
   for _ in 0..<100 {
     rows = try scanner.scan().workloads.filter {
-      $0.root.parent == shell.processIdentifier && !$0.ports.isEmpty
+      $0.root.parent == getpid() && !$0.ports.isEmpty
     }
     if rows.count == 3 { break }
     Thread.sleep(forTimeInterval: 0.2)

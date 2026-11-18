@@ -21,13 +21,16 @@ public struct Proc: Sendable {
   public var parentUnique: UInt64
   public var uid: UInt32
   public var status: UInt32 = 0
+  /// In the foreground process group of a terminal: what the user is looking at in a tab.
+  public var foreground = false
+  /// The process macOS holds responsible for this one, which outlives the parent. 0 when unknown.
+  public var responsible: Int32 = 0
   public var comm: String
   public let path: String
   public var cwd: String
   public let args: [String]
-  /// Lowercased executable name, and the lowercased command line, computed once per process.
+  /// Lowercased executable name.
   public let base: String
-  public let text: String
   public var memory: UInt64
   public var cpuTime: UInt64
   public var cpu: Double = 0
@@ -35,7 +38,6 @@ public struct Proc: Sendable {
   public var suspended: Bool { status == 4 }
   public var zombie: Bool { status == 5 }
   public var command: String { args.map(shellQuote).joined(separator: " ") }
-  public func has(_ needle: String) -> Bool { text.has(needle) }
   /// Lowercased name from the first argument; version-named binaries such as Claude Code's
   /// `versions/2.1.309` still identify themselves there.
   public var argName: String {
@@ -49,9 +51,13 @@ public struct Proc: Sendable {
     guard let range = path.range(of: ".app/") else { return nil }
     return String(path[..<range.lowerBound]) + ".app"
   }
-  /// The application this executable belongs to on its own. Framework-embedded executables such
-  /// as Xcode's Python or a browser's helper are only app members when their parent shares the bundle.
-  public var appBundle: String? { path.has(".framework/") ? nil : outerBundle }
+  /// The application this executable is part of. Runtimes and toolchains that ship inside a bundle,
+  /// such as Xcode's Python or Homebrew's Python.app, run the user's code and belong to no app.
+  public var appBundle: String? {
+    guard let outer = outerBundle else { return nil }
+    if path.contains(".xpc/") || path.contains(".appex/") { return outer }
+    return outer.contains(".framework/") || path.contains("/Contents/Developer/") ? nil : outer
+  }
   public init(
     pid: Int32, parent: Int32, start: UInt64 = 1, unique: UInt64? = nil, version: Int32 = 1,
     parentUnique: UInt64 = 0, pgid: Int32? = nil, uid: UInt32 = getuid(), path: String,
@@ -69,65 +75,60 @@ public struct Proc: Sendable {
     self.cpuTime = cpuTime
     comm = String(path.split(separator: "/").last ?? "")
     base = comm.lowercased()
-    text = args.joined(separator: " ").lowercased()
   }
 }
 
-extension String {
-  /// Byte-level substring search through libc's memmem; Foundation's locale-aware `contains`
-  /// and generic collection searches are orders of magnitude slower on long command lines.
-  public func has(_ needle: String) -> Bool {
-    guard !needle.isEmpty else { return false }
-    var haystack = self
-    var pattern = needle
-    return haystack.withUTF8 { h in
-      pattern.withUTF8 { n in
-        guard h.count >= n.count, let hb = h.baseAddress, let nb = n.baseAddress else {
-          return false
-        }
-        return memmem(hb, h.count, nb, n.count) != nil
-      }
-    }
-  }
-}
-
+/// A label for what a workload is. It never decides whether the workload is shown.
 public struct Kind: Equatable, Sendable {
   public var name: String
   public var icon: String
+  /// Speaks HTTP, so its port opens in a browser.
   public var web: Bool
-  public var background: Bool = false
-  public init(name: String, icon: String, web: Bool, background: Bool = false) {
+  public init(name: String, icon: String, web: Bool = false) {
     self.name = name
     self.icon = icon
     self.web = web
-    self.background = background
   }
 }
 
-/// A TCP socket in the LISTEN state.
+public enum Transport: String, Sendable {
+  case tcp, udp, unix
+}
+
+/// A socket a workload can be reached on: listening TCP, bound UDP or a listening Unix socket.
 public struct Listener: Hashable, Sendable {
+  public var transport: Transport
   public var port: Int
   public var address: String
   public var wildcard: Bool
+  /// File-system path of a Unix-domain socket.
+  public var path: String
   public var pid: Int32
-  public var uid: UInt32
   public var socket: UInt64
   public init(
     port: Int, address: String = "127.0.0.1", wildcard: Bool = false, pid: Int32,
-    uid: UInt32 = getuid(), socket: UInt64 = 0
+    transport: Transport = .tcp, path: String = "", socket: UInt64 = 0
   ) {
+    self.transport = transport
     self.port = port
     self.address = address
     self.wildcard = wildcard
+    self.path = path
     self.pid = pid
-    self.uid = uid
     self.socket = socket
+  }
+  /// `127.0.0.1:3000`, `*:5353/udp`, `[::1]:8080` or the socket path.
+  public var text: String {
+    if transport == .unix { return path }
+    let host = wildcard ? "*" : address.contains(":") ? "[\(address)]" : address
+    return "\(host):\(port)" + (transport == .udp ? "/udp" : "")
   }
 }
 
 public enum Lane: String, CaseIterable, Sendable {
   case servers = "Servers"
   case background = "Background"
+  case agents = "Agents"
   case apps = "Apps"
   case system = "System & tools"
 }
@@ -145,7 +146,12 @@ public struct Workload: Identifiable, Sendable {
   /// Protected processes inside the tree that Stop leaves running.
   public var excluded: [Proc]
   public var kind: Kind
+  /// The project it belongs to.
   public var name: String
+  /// What it runs, short enough for a subtitle: `worker.py`, `next dev`, `-m http.server`.
+  public var detail: String
+  /// The process that does the work, below any shell or package-manager wrappers.
+  public var lead: Proc
   public var listeners: [Listener]
   public var provenance: String
   public var orphan: Bool
@@ -163,11 +169,13 @@ public struct Workload: Identifiable, Sendable {
   public var origin: String
   public var history: [Sample] = []
   public init(
-    root: Proc, members: [Proc], excluded: [Proc], kind: Kind, name: String, listeners: [Listener],
-    provenance: String, origin: String, orphan: Bool, section: Lane, cautions: [String],
-    blocked: String?, launchdLabel: String?
+    root: Proc, members: [Proc], excluded: [Proc], kind: Kind, name: String, detail: String = "",
+    lead: Proc? = nil, listeners: [Listener], provenance: String, origin: String, orphan: Bool,
+    section: Lane, cautions: [String], blocked: String?, launchdLabel: String?
   ) {
     self.root = root
+    self.detail = detail
+    self.lead = lead ?? root
     self.members = members
     self.excluded = excluded
     self.kind = kind
@@ -181,8 +189,22 @@ public struct Workload: Identifiable, Sendable {
     self.blocked = blocked
     self.launchdLabel = launchdLabel
   }
-  public var ports: [Int] { Array(Set(listeners.map(\.port))).sorted() }
+  public var ports: [Int] {
+    Array(Set(listeners.filter { $0.transport != .unix }.map(\.port))).sorted()
+  }
+  /// TCP ports, the ones a browser or client connects to.
+  public var tcpPorts: [Int] {
+    Array(Set(listeners.filter { $0.transport == .tcp }.map(\.port))).sorted()
+  }
+  /// Where it listens, as text, without the IPv4 and IPv6 twins of one wildcard port.
+  public var endpoints: [String] {
+    var seen = Set<String>()
+    return listeners.map(\.text).filter { seen.insert($0).inserted }
+  }
   public var exposed: Bool { listeners.contains { $0.wildcard } }
+  public var url: URL? {
+    kind.web ? tcpPorts.first.flatMap { URL(string: "http://localhost:\($0)") } : nil
+  }
   public var memory: UInt64 { members.reduce(0) { $0 + $1.memory } }
   public var cpu: Double { members.reduce(0) { $0 + $1.cpu } }
   public var suspended: Bool { members.contains { $0.suspended } }

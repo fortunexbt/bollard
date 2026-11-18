@@ -3,11 +3,14 @@
 #include <sys/sysctl.h>
 #include <sys/proc_info.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 
 // Darwin ABI from Apple's proc_info_private.h. Size checked; failure disables actions.
 struct dp_unique { uint8_t uuid[16]; uint64_t unique, parent; int32_t version, original_parent_version; uint64_t reserved[2]; };
@@ -31,6 +34,8 @@ int dp_table(DPEntry *buffer, int capacity) {
     e->pgid = k->kp_eproc.e_pgid;
     e->uid = k->kp_eproc.e_ucred.cr_uid;
     e->status = k->kp_proc.p_stat;
+    e->tty = k->kp_eproc.e_tdev != NODEV;
+    e->foreground = e->tty && k->kp_eproc.e_tpgid == k->kp_eproc.e_pgid;
     e->start = (uint64_t)k->kp_proc.p_starttime.tv_sec * 1000000 + (uint64_t)k->kp_proc.p_starttime.tv_usec;
     strlcpy(e->comm, k->kp_proc.p_comm, sizeof(e->comm));
   }
@@ -47,6 +52,19 @@ int dp_identity(int32_t pid, DPIdentity *out) {
   out->version = u.version;
   proc_pidpath(pid, out->path, sizeof(out->path));
   return 1;
+}
+
+int32_t dp_generation(int32_t pid) {
+  struct dp_unique u = {0};
+  return proc_pidinfo(pid, 17, 0, &u, sizeof(u)) == sizeof(u) ? u.version : 0;
+}
+
+int32_t dp_responsible(int32_t pid) {
+  static int32_t (*lookup)(int32_t);
+  static int resolved;
+  if (!resolved) { lookup = dlsym(RTLD_DEFAULT, "responsibility_get_pid_responsible_for_pid"); resolved = 1; }
+  int32_t owner = lookup ? lookup(pid) : 0;
+  return owner > 0 ? owner : 0;
 }
 
 int dp_args(int32_t pid, char *buffer, int capacity) {
@@ -85,82 +103,13 @@ int dp_usage(int32_t pid, DPUsage *out) {
   return 1;
 }
 
-// Darwin ABI from XNU in_pcb.h, socketvar.h and tcp_var.h (net.inet.tcp.pcblist_n, as used by
-// netstat). Every record starts with a length and kind and is padded to 8 bytes; only the
-// leading fields are read, and each record's declared length is checked before use.
-#pragma pack(4)
-struct dp_xinpgen { uint32_t len; unsigned count; uint64_t gen, sogen; };
-struct dp_xgen { uint32_t len, kind; };
-struct dp_xinpcb {
-  uint32_t len, kind; uint64_t inpp; uint16_t fport, lport; uint64_t ppcb, gencnt;
-  int flags; uint32_t flow; uint8_t vflag, ttl, proto;
-  uint32_t faddr[4], laddr[4];
-};
-struct dp_xsocket {
-  uint32_t len, kind; uint64_t so; short type; uint32_t options; short linger, state;
-  uint64_t pcb; int protocol, family; short qlen, incqlen, qlimit, timeo; uint16_t error;
-  int32_t pgid; uint32_t oobmark; uint32_t uid; int32_t last_pid, e_pid;
-};
-struct dp_xtcpcb { uint32_t len, kind; uint64_t segq; int dupacks; int timer[4]; int state; };
-#pragma pack()
-enum { DP_XSO_SOCKET = 0x1, DP_XSO_INPCB = 0x10, DP_XSO_TCPCB = 0x20, DP_TCPS_LISTEN = 1, DP_INP_IPV4 = 1 };
-
-static int dp_kernel_listeners(DPListener *buffer, int capacity) {
-  size_t size = 0;
-  if (sysctlbyname("net.inet.tcp.pcblist_n", NULL, &size, NULL, 0) < 0) return -errno;
-  size += size / 4 + 4096;
-  char *data = malloc(size);
-  if (!data) return -ENOMEM;
-  if (sysctlbyname("net.inet.tcp.pcblist_n", data, &size, NULL, 0) < 0) { int e = errno; free(data); return -e; }
-  char *p = data, *end = data + size;
-  if (size < sizeof(struct dp_xinpgen)) { free(data); return -EINVAL; }
-  const struct dp_xinpgen *head = (struct dp_xinpgen *)data;
-  p += head->len;
-  struct dp_xinpcb *inp = NULL; struct dp_xsocket *so = NULL; struct dp_xtcpcb *tp = NULL;
-  int count = 0, decoded = 0;
-  while (p + sizeof(struct dp_xgen) <= end) {
-    struct dp_xgen *g = (struct dp_xgen *)p;
-    if (g->len < sizeof(struct dp_xgen) || p + g->len > end) break;
-    if (g->kind == DP_XSO_INPCB && g->len >= sizeof(struct dp_xinpcb)) inp = (struct dp_xinpcb *)p;
-    else if (g->kind == DP_XSO_SOCKET && g->len >= sizeof(struct dp_xsocket)) so = (struct dp_xsocket *)p;
-    else if (g->kind == DP_XSO_TCPCB && g->len >= sizeof(struct dp_xtcpcb)) tp = (struct dp_xtcpcb *)p;
-    p += (g->len + 7) & ~7u;
-    if (!(inp && so && tp)) continue;
-    decoded++;
-    if (tp->state == DP_TCPS_LISTEN) {
-      if (count >= capacity) { free(data); return -EOVERFLOW; }
-      DPListener *l = &buffer[count++];
-      memset(l, 0, sizeof(*l));
-      l->pid = so->last_pid;
-      l->uid = so->uid;
-      l->port = ntohs(inp->lport);
-      l->socket = so->so;
-      const uint8_t *local = (const uint8_t *)inp->laddr;
-      if (inp->vflag & DP_INP_IPV4) {
-        l->family = 4;
-        memcpy(l->address, local + 12, 4);
-        l->wildcard = inp->laddr[3] == 0;
-      } else {
-        l->family = 6;
-        memcpy(l->address, local, 16);
-        l->wildcard = (inp->laddr[0] | inp->laddr[1] | inp->laddr[2] | inp->laddr[3]) == 0;
-      }
-    }
-    inp = NULL; so = NULL; tp = NULL;
-  }
-  unsigned advertised = head->count;
-  free(data);
-  // macOS 27 hands callers that are not platform binaries an empty table (header and trailer
-  // only) with no error, and a changed record layout decodes nothing. Both look like zero
-  // listeners, so report them as failures and let dp_listeners walk descriptors instead.
-  if (advertised > 0 && decoded == 0) return -ENODATA;
-  return count;
-}
-
-// Per-process walk over the descriptors this user can inspect. Used when the kernel table is
-// withheld. Processes the caller may not inspect (other users, platform daemons) are skipped, and
-// a socket shared by several processes is reported once, for the first process that holds it.
-static int dp_walk_listeners(DPListener *buffer, int capacity) {
+// Every socket a workload can be reached on: listening TCP, bound and unconnected UDP, and
+// listening Unix-domain sockets, read from the descriptors of each process this user may inspect.
+// macOS 27 withholds the kernel socket table (net.inet.tcp.pcblist_n) from apps, so descriptors are
+// the one source that works everywhere and they name the real holder, not the last toucher. A
+// socket inherited across fork is reported once per holder; the caller picks the owner.
+int dp_sockets(DPSocket **out) {
+  *out = NULL;
   int expected = proc_listallpids(NULL, 0);
   if (expected <= 0) return -errno;
   int bytes = (expected + 64) * (int)sizeof(pid_t);
@@ -169,7 +118,8 @@ static int dp_walk_listeners(DPListener *buffer, int capacity) {
   int n = proc_listallpids(pids, bytes);
   if (n <= 0) { int e = errno; free(pids); return -e; }
   struct proc_fdinfo *fds = NULL;
-  int fdcap = 0, count = 0;
+  DPSocket *result = NULL;
+  int fdcap = 0, count = 0, capacity = 0;
   for (int i = 0; i < n; i++) {
     int needed = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, NULL, 0);
     if (needed <= 0) continue;
@@ -177,72 +127,55 @@ static int dp_walk_listeners(DPListener *buffer, int capacity) {
       free(fds);
       fdcap = needed + 64 * (int)sizeof(*fds);
       fds = malloc(fdcap);
-      if (!fds) { free(pids); return -ENOMEM; }
+      if (!fds) { free(pids); free(result); return -ENOMEM; }
     }
     int got = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, fds, fdcap);
-    uint32_t uid = 0;
-    int uid_known = 0;
     for (int k = 0; k < got / (int)sizeof(*fds); k++) {
       if (fds[k].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
       struct socket_fdinfo info;
       if (proc_pidfdinfo(pids[i], fds[k].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info)) != sizeof(info)) continue;
       const struct socket_info *si = &info.psi;
-      if (si->soi_kind != SOCKINFO_TCP || si->soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
-      int duplicate = 0;
-      for (int j = 0; j < count && !duplicate; j++) duplicate = buffer[j].socket == si->soi_so;
-      if (duplicate) continue;
-      if (count >= capacity) { free(fds); free(pids); return -EOVERFLOW; }
-      if (!uid_known) {
-        struct proc_bsdinfo b;
-        if (proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &b, sizeof(b)) != sizeof(b)) break;
-        uid = b.pbi_uid;
-        uid_known = 1;
+      DPSocket s = {0};
+      const struct in_sockinfo *in = NULL;
+      if (si->soi_kind == SOCKINFO_TCP) {
+        if (si->soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
+        in = &si->soi_proto.pri_tcp.tcpsi_ini;
+        s.transport = DP_TCP;
+      } else if (si->soi_kind == SOCKINFO_IN && si->soi_protocol == IPPROTO_UDP) {
+        in = &si->soi_proto.pri_in;
+        if (in->insi_lport == 0 || in->insi_fport != 0) continue;
+        s.transport = DP_UDP;
+      } else if (si->soi_kind == SOCKINFO_UN) {
+        const char *path = si->soi_proto.pri_un.unsi_addr.ua_sun.sun_path;
+        // Skip the per-run scratch sockets runtimes drop in the temporary directory.
+        if (!(si->soi_options & SO_ACCEPTCONN) || !path[0] || strstr(path, "/var/folders/")) continue;
+        s.transport = DP_UNIX;
+        strlcpy(s.path, path, sizeof(s.path));
+      } else continue;
+      if (in) {
+        s.port = ntohs((uint16_t)in->insi_lport);
+        int length = (in->insi_vflag & INI_IPV4) ? 4 : 16;
+        s.family = length == 4 ? 4 : 6;
+        memcpy(s.address, (const uint8_t *)&in->insi_laddr + (length == 4 ? 12 : 0), length);
+        uint8_t any = 0;
+        for (int b = 0; b < length; b++) any |= s.address[b];
+        s.wildcard = any == 0;
       }
-      const struct in_sockinfo *in = &si->soi_proto.pri_tcp.tcpsi_ini;
-      DPListener *l = &buffer[count++];
-      memset(l, 0, sizeof(*l));
-      l->pid = pids[i];
-      l->uid = uid;
-      l->port = ntohs((uint16_t)in->insi_lport);
-      l->socket = si->soi_so;
-      const uint8_t *local = (const uint8_t *)&in->insi_laddr;
-      int length = (in->insi_vflag & INI_IPV4) ? 4 : 16;
-      l->family = length == 4 ? 4 : 6;
-      memcpy(l->address, local + (length == 4 ? 12 : 0), length);
-      uint8_t any = 0;
-      for (int b = 0; b < length; b++) any |= l->address[b];
-      l->wildcard = any == 0;
+      s.pid = pids[i];
+      s.socket = si->soi_so;
+      if (count == capacity) {
+        capacity = capacity ? capacity * 2 : 256;
+        DPSocket *grown = realloc(result, capacity * sizeof(DPSocket));
+        if (!grown) { free(fds); free(pids); free(result); return -ENOMEM; }
+        result = grown;
+      }
+      result[count++] = s;
     }
   }
   free(fds);
   free(pids);
+  *out = result;
   return count;
-}
-
-int dp_listeners(DPListener *buffer, int capacity) {
-  int count = dp_kernel_listeners(buffer, capacity);
-  return count >= 0 ? count : dp_walk_listeners(buffer, capacity);
-}
-
-int dp_owns_socket(int32_t pid, uint64_t socket) {
-  errno = 0;
-  int needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
-  if (needed <= 0) return errno ? -errno : 0;
-  int allocated = needed + 64 * (int)sizeof(struct proc_fdinfo);
-  struct proc_fdinfo *fds = malloc(allocated);
-  if (!fds) return -ENOMEM;
-  errno = 0;
-  int bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, allocated);
-  if (bytes <= 0) { int e = errno; free(fds); return e ? -e : 0; }
-  int found = 0;
-  for (int i = 0; i < bytes / (int)sizeof(*fds) && !found; i++) {
-    if (fds[i].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
-    struct socket_fdinfo info = {0};
-    if (proc_pidfdinfo(pid, fds[i].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info)) != sizeof(info)) continue;
-    found = info.psi.soi_so == socket;
-  }
-  free(fds);
-  return found;
 }
 
 int dp_signal(int32_t pid, uint64_t start, uint64_t unique, int32_t version, int sig) {

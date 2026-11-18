@@ -27,10 +27,11 @@ for _ in 0..<15 {
   scans.append(full)
   let (_, table) = try measured { try Native.table() }
   tables.append(table)
-  let (listeners, socket) = try measured { try Native.listeners() }
+  let (held, socket) = try measured { try Native.sockets() }
   sockets.append(socket)
   let (all, snapshot) = try measured { try Native.snapshot() }
   snapshots.append(snapshot)
+  let listeners = Policy.owners(held, in: all)
   let (_, classification) = measured { Policy.workloads(all, listeners: listeners) }
   policy.append(classification)
 }
@@ -38,7 +39,7 @@ let result: [String: Any] = [
   "timestamp": ISO8601DateFormatter().string(from: Date()), "samples": 15,
   "first_scan_ms": firstScan,
   "steady_scan_ms": stats(scans), "process_table_ms": stats(tables),
-  "socket_table_ms": stats(sockets),
+  "socket_walk_ms": stats(sockets),
   "uncached_snapshot_ms": stats(snapshots), "policy_ms": stats(policy),
   "process_count": first.count,
   "listeners": first.listeners.count, "workloads": first.workloads.count,

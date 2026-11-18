@@ -163,12 +163,10 @@ enum MCPServer {
         }
         let rows = scan.workloads.filter { $0.ports.contains(port) }
         if rows.isEmpty {
-          let raw = scan.listeners.filter { $0.port == port }
           return text(
-            raw.isEmpty
-              ? "Nothing is listening on \(port)."
-              : "Port \(port) is held by PID \(raw[0].pid) (uid \(raw[0].uid)), not a workload Bollard manages."
-          )
+            Ports.isListening(port)
+              ? "Port \(port) is in use by a process Bollard cannot inspect: it belongs to root or another user."
+              : "Nothing is listening on \(port).")
         }
         return text(try CLI.json(rows))
       case "stop_server":

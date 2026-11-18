@@ -1,28 +1,38 @@
 import Foundation
 
-/// Branch or worktree name for a directory, from the checkout's HEAD file. No git binary involved.
+/// Repository name and branch for a directory, from the checkout's HEAD file. No git binary involved.
+public struct Checkout: Sendable, Equatable {
+  /// The repository's own name; for a linked worktree, the name of the repository it belongs to.
+  public var name: String
+  public var branch: String
+  public init(name: String, branch: String) {
+    self.name = name
+    self.branch = branch
+  }
+}
+
 public enum Git {
-  nonisolated(unsafe) private static var cache: [String: (date: Date, branch: String?)] = [:]
+  nonisolated(unsafe) private static var cache: [String: (date: Date, value: Checkout?)] = [:]
   private static let lock = NSLock()
 
-  public static func branch(for directory: String) -> String? {
+  public static func checkout(for directory: String) -> Checkout? {
     guard !directory.isEmpty else { return nil }
     lock.lock()
     defer { lock.unlock() }
-    if let hit = cache[directory], Date().timeIntervalSince(hit.date) < 10 { return hit.branch }
+    if let hit = cache[directory], Date().timeIntervalSince(hit.date) < 10 { return hit.value }
     let value = read(directory)
     cache[directory] = (Date(), value)
     if cache.count > 500 { cache = cache.filter { Date().timeIntervalSince($0.value.date) < 60 } }
     return value
   }
-  public static func read(_ directory: String) -> String? {
+  public static func read(_ directory: String) -> Checkout? {
     var url = URL(fileURLWithPath: directory).standardizedFileURL
     for _ in 0..<12 {
       let dotGit = url.appendingPathComponent(".git")
       var isDirectory: ObjCBool = false
       if FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) {
         var gitDirectory = dotGit
-        var worktree: String?
+        var name = url.lastPathComponent
         if !isDirectory.boolValue {
           // A worktree's .git is a file: "gitdir: /repo/.git/worktrees/<name>"
           guard let text = try? String(contentsOf: dotGit, encoding: .utf8),
@@ -30,7 +40,11 @@ public enum Git {
           else { return nil }
           let path = line.dropFirst(7).trimmingCharacters(in: .whitespaces)
           gitDirectory = URL(fileURLWithPath: path, relativeTo: url).standardizedFileURL
-          if gitDirectory.path.contains("/worktrees/") { worktree = gitDirectory.lastPathComponent }
+          if let range = gitDirectory.path.range(of: "/.git/worktrees/") {
+            name =
+              URL(fileURLWithPath: String(gitDirectory.path[..<range.lowerBound]))
+              .lastPathComponent
+          }
         }
         guard
           let head = try? String(
@@ -39,7 +53,7 @@ public enum Git {
         let line = head.trimmingCharacters(in: .whitespacesAndNewlines)
         let branch =
           line.hasPrefix("ref: refs/heads/") ? String(line.dropFirst(16)) : String(line.prefix(8))
-        return worktree.map { $0 == branch ? branch : "\(branch) · \($0)" } ?? branch
+        return Checkout(name: name, branch: branch)
       }
       let parent = url.deletingLastPathComponent()
       if parent.path == url.path { break }
