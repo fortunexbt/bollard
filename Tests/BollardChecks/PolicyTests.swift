@@ -141,9 +141,18 @@ struct PolicyTests {
       42: p(42, 40, "/bin/zsh", ["zsh", "-c", "python3 -m http.server"]),
       43: p(43, 42, python, ["python3", "-m", "http.server"]),
       44: p(44, 40, "/Users/me/.local/share/claude/versions/2.1.309", ["claude", "bg-spare"]),
+      45: p(45, 40, "/bin/zsh", ["zsh", "-c", "until curl -sf localhost:8000; do sleep 5; done"]),
+      46: p(46, 45, "/bin/sleep", ["sleep", "5"]),
     ]
     let rows = Policy.workloads(all, listeners: [l(8000, 43)])
-    check(rows.count == 2, "\(rows.map(\.root.pid))")
+    check(rows.count == 3, "\(rows.map(\.root.pid))")
+    let waiting = row(rows, 45)!
+    check(
+      waiting.section == .commands
+        && waiting.detail == "until curl -sf localhost:8000; do sleep 5; done"
+        && waiting.kind.name == "Shell script",
+      "a shell the agent is waiting in is one of its commands, described by its loop: \(waiting.detail)"
+    )
     let agent = row(rows, 40)!
     check(
       agent.section == .agents && agent.kind.name == "Claude Code" && agent.blocked == nil

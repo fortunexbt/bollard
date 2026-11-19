@@ -11,7 +11,7 @@ enum Theme {
     case .agents: return .orange
     case .apps: return .indigo
     case .system: return .gray
-    case .servers, .background:
+    case .servers, .background, .commands:
       switch w.kind.icon {
       case "cylinder.split.1x2": return .purple
       case "sparkles": return .pink
@@ -52,13 +52,13 @@ struct Panel: View {
           VStack(spacing: 2) {
             if lanes.isEmpty && recent.isEmpty { empty }
             ForEach(lanes, id: \.lane) { entry in
-              laneHeader(entry.lane.rawValue, count: entry.rows.count)
+              laneHeader(entry.lane.title, key: entry.lane.rawValue, count: entry.rows.count)
               if store.open(entry.lane) {
                 ForEach(entry.rows) { w in Row(store: store, w: w).id(w.id) }
               }
             }
             if !recent.isEmpty {
-              laneHeader("Recent", count: recent.count)
+              laneHeader("Recent", key: "Recent", count: recent.count)
               if !store.collapsed.contains("Recent") {
                 ForEach(recent) { RecentRow(store: store, server: $0) }
               }
@@ -188,10 +188,10 @@ struct Panel: View {
       }.padding(.horizontal, 16).padding(.bottom, 8)
     }
   }
-  func laneHeader(_ title: String, count: Int) -> some View {
-    let open = !store.collapsed.contains(title) || !store.search.isEmpty
+  func laneHeader(_ title: String, key: String, count: Int) -> some View {
+    let open = !store.collapsed.contains(key) || !store.search.isEmpty
     return Button {
-      withAnimation(.snappy(duration: 0.2)) { store.toggle(title) }
+      withAnimation(.snappy(duration: 0.2)) { store.toggle(key) }
     } label: {
       HStack(spacing: 5) {
         Text(title).foregroundStyle(.secondary)

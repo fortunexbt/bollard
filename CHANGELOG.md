@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.2 — 2026-11-19
+
+Scrolling. 3.0.1 fixed the scans; the list itself was still too long and too busy.
+
+- Agent commands lane, collapsed by default: what an agent is running through its shell without a port. With many agents at work these were dozens of Background rows.
+- A shell waiting in a `sleep` loop is described by its loop, not listed as `sleep 5`.
+- Rows no longer light up as they pass under a resting cursor mid-scroll.
+- The Apps lane is titled "Apps with open ports", which is what it has always listed.
+- Debug builds have `--show --scrolltest`, which scrolls the panel and reports late frames.
+
 ## 3.0.1 — 2026-11-19
 
 The panel stuttered, badly on a busy Mac. Scans cost about a tenth of the CPU they did.

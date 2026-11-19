@@ -1,7 +1,7 @@
 import BollardCore
 import Foundation
 
-let version = "3.0.1"
+let version = "3.0.2"
 
 enum CLI {
   static func describe(_ w: Workload) -> [String: Any] {

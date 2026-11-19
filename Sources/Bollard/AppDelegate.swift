@@ -15,6 +15,9 @@ final class MenuPanel: NSPanel {
     contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
     defer: false)
   var item: NSStatusItem!
+  #if DEBUG
+    var scrollTest: ScrollTest?
+  #endif
   var timer: Timer?
   var refreshInterval: TimeInterval?
   var outsideMonitor: Any?
@@ -76,6 +79,13 @@ final class MenuPanel: NSPanel {
     if CommandLine.arguments.contains("--show") {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() }
     }
+    #if DEBUG
+      if CommandLine.arguments.contains("--scrolltest") {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+          self.scrollTest = ScrollTest(in: self.panel)
+        }
+      }
+    #endif
   }
   /// The bollard glyph as a template image, so it follows the menu bar's colours.
   static var menuBarIcon: NSImage? {

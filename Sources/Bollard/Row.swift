@@ -91,7 +91,9 @@ struct Row: View {
         : hovering ? AnyShapeStyle(.fill.quaternary.opacity(0.6)) : AnyShapeStyle(.clear),
       in: .rect(cornerRadius: 10)
     )
-    .onHover { hovering = $0 }
+    // A row sliding under a resting cursor is not being pointed at. Lighting each one up as it
+    // passes rebuilds it mid-scroll.
+    .onHover { hovering = $0 && !store.scrolling }
     .contextMenu { WorkloadMenu(store: store, w: w) }
   }
   @ViewBuilder private var badges: some View {

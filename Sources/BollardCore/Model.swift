@@ -137,8 +137,16 @@ public enum Lane: String, CaseIterable, Sendable {
   case servers = "Servers"
   case background = "Background"
   case agents = "Agents"
+  /// What an agent is running through its shell right now, without a port: test runs, builds,
+  /// the loops it waits in. Many and short-lived, so they are kept apart from Background.
+  case commands = "Agent commands"
   case apps = "Apps"
   case system = "System & tools"
+}
+
+extension Lane {
+  /// The heading shown in the panel. The raw value is the stable name in `--json`.
+  public var title: String { self == .apps ? "Apps with open ports" : rawValue }
 }
 
 public struct Sample: Sendable, Equatable {

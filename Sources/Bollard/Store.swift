@@ -18,7 +18,7 @@ enum WorkloadSort: String, CaseIterable {
     didSet { defaults.set(sort.rawValue, forKey: "sort") }
   }
   var collapsed: Set<String> {
-    didSet { defaults.set(Array(collapsed), forKey: "collapsed") }
+    didSet { defaults.set(Array(collapsed), forKey: "collapsed.3") }
   }
   var notify: Bool {
     didSet {
@@ -94,7 +94,9 @@ enum WorkloadSort: String, CaseIterable {
   init() {
     sort = WorkloadSort(rawValue: defaults.string(forKey: "sort") ?? "Name") ?? .name
     collapsed = Set(
-      defaults.stringArray(forKey: "collapsed") ?? ["Apps", "System & tools", "Recent"])
+      defaults.stringArray(forKey: "collapsed.3") ?? [
+        "Agent commands", "Apps", "System & tools", "Recent",
+      ])
     notify = defaults.object(forKey: "notify") as? Bool ?? true
     hotkeyEnabled = defaults.object(forKey: "hotkey") as? Bool ?? true
   }

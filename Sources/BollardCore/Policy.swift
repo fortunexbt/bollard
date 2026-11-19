@@ -303,7 +303,8 @@ public enum Policy {
       var lead = root
       while lead.program.wrapper {
         let next = (children[lead.pid] ?? []).filter { roles[$0.pid] == .user }
-        guard next.count == 1 else { break }
+        // A shell asleep between polls is described by its loop, not by the sleep.
+        guard next.count == 1, next[0].base != "sleep" else { break }
         lead = next[0]
       }
       let program = lead.program
@@ -347,7 +348,9 @@ public enum Policy {
         detail: program.summary, lead: lead, listeners: held,
         provenance: provenance(of: root, in: all, labels: labels),
         origin: origin(of: root, in: all, labels: labels), orphan: orphan,
-        section: apple ? .system : reachable ? .servers : .background, cautions: cautions,
+        section: apple
+          ? .system : reachable ? .servers : isAgent(root.parent) ? .commands : .background,
+        cautions: cautions,
         blocked: nil, launchdLabel: label)
       row.branch = place.branch
       row.controller = controller
@@ -358,7 +361,9 @@ public enum Policy {
 
     // Remove nested rows; the containing workload owns metrics and actions.
     let values = Array(result.values)
-    let order: [Lane: Int] = [.servers: 0, .background: 1, .agents: 2, .apps: 3, .system: 4]
+    let order: [Lane: Int] = [
+      .servers: 0, .background: 1, .agents: 2, .commands: 3, .apps: 4, .system: 5,
+    ]
     return values.filter { w in
       !values.contains { $0.id != w.id && $0.members.contains { $0.identity == w.id } }
     }.sorted {
