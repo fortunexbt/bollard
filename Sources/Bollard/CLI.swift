@@ -2,7 +2,7 @@ import AppKit
 import BollardCore
 import Foundation
 
-let version = "3.1.0"
+let version = "3.2.0"
 
 /// The applications the user has open: the ones with a Dock icon.
 func openApplications() -> Set<Int32> {

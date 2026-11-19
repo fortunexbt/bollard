@@ -10,6 +10,10 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 let flags = Set(arguments.filter { $0.hasPrefix("--") })
 let positional = arguments.filter { !$0.hasPrefix("--") }
 #if DEBUG
+  if flags.contains("--render-bar"), let path = positional.first {
+    try MainActor.assumeIsolated { try Render.bar(to: path) }
+    exit(0)
+  }
   if flags.contains("--render") {
     guard let path = positional.first else { fail("Usage: bollard --render <png> [target]") }
     try MainActor.assumeIsolated {

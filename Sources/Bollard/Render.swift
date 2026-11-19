@@ -51,6 +51,39 @@
     }
   }
 
+  extension Render {
+    /// Draws the menu bar item with every readout on, from live figures, on a dark and a light bar.
+    static func bar(to path: String) throws {
+      _ = NSApplication.shared
+      let sampler = SystemSampler()
+      let scan = try BollardCore.Scanner().scan(apps: openApplications())
+      RunLoop.main.run(until: Date().addingTimeInterval(1))
+      let servers = scan.workloads.filter { $0.section == .servers }
+      let size = NSSize(width: 420, height: 24)
+      let image = NSImage(size: NSSize(width: size.width, height: size.height * 2))
+      image.lockFocus()
+      for (row, name) in [NSAppearance.Name.darkAqua, .aqua].enumerated() {
+        NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+          let title = MenuBar.title(
+            Set(Readout.allCases), servers: max(servers.count, 2), exposed: false,
+            agents: scan.workloads.filter { $0.section == .agents }.count, system: sampler.sample())
+          let origin = NSPoint(x: 0, y: Double(row) * size.height)
+          (row == 0 ? NSColor(white: 0.12, alpha: 1) : NSColor(white: 0.93, alpha: 1)).setFill()
+          NSRect(origin: origin, size: size).fill()
+          if let icon = AppDelegate.menuBarIcon {
+            icon.draw(in: NSRect(x: 8, y: origin.y + 3, width: 18, height: 18))
+          }
+          title.draw(at: NSPoint(x: 28, y: origin.y + (size.height - title.size().height) / 2))
+        }
+      }
+      image.unlockFocus()
+      guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else {
+        throw SafetyError("Could not draw the menu bar.")
+      }
+      try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+  }
+
   /// Development aid, debug builds only: scrolls the open panel's list end to end for a few
   /// seconds and reports how late each frame's turn on the main thread came. A late turn is a
   /// dropped frame. `swift run Bollard --show --scrolltest`

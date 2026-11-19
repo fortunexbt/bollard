@@ -125,3 +125,7 @@ swift format lint -r Sources Tests Package.swift
 ```
 
 The full run adds the socket walk against `lsof` parity (lsof is only the test oracle), disposable servers, a launch agent, an app bundle and stop all. The live checks create their own fixtures and remove them, including on failure, and never touch existing workloads. CI runs the build, the policy checks and the format lint. What was checked by hand for each release is in [VERIFICATION.md](../VERIFICATION.md).
+
+## Menu bar readouts
+
+⋯ → Show in Menu Bar chooses what sits beside the icon: Servers (the count, orange when one is reachable from the network), Agent Sessions, CPU, Memory and Network. CPU is the share of all cores in use. Memory is app memory, wired memory and the compressor as a share of installed memory. Network is bytes a second received and sent on Ethernet and Wi-Fi; loopback and tunnels are left out. The system figures are read every two seconds, and not at all when none of them is shown.

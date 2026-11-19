@@ -131,6 +131,13 @@ struct Panel: View {
     }.disabled(!stoppable)
     Button("Force Quit All Shown Servers") { store.stopAll(.kill) }.disabled(!stoppable)
     Divider()
+    Menu("Show in Menu Bar") {
+      ForEach(Readout.allCases, id: \.self) { readout in
+        Toggle(
+          readout.title,
+          isOn: Binding(get: { store.binding(readout) }, set: { store.set(readout, $0) }))
+      }
+    }
     Toggle("Notify When Servers Start or Stop", isOn: $store.notify)
     Toggle("Global Shortcut \(Hotkey.description)", isOn: $store.hotkeyEnabled)
     Toggle("Launch at Login", isOn: $store.launchAtLogin)

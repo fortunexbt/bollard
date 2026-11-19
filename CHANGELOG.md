@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.0 — 2026-11-19
+
+- Choose what the menu bar item shows, in ⋯ → Show in Menu Bar: the server count, how many agent sessions are running, CPU, memory and network. Any combination; servers alone is the default, as before.
+- CPU is the share of all cores in use. Memory is app memory plus wired plus compressed, as a share of what is installed. Network is bytes a second down and up over Ethernet and Wi-Fi, without loopback.
+- The figures come from three system calls every two seconds, and only while a readout that needs them is on.
+
 ## 3.1.0 — 2026-11-19
 
 - The Apps lane lists every application you have open, with its icon, memory and CPU across its helpers, and Quit. It used to list only applications listening on a port. Apple's applications quit through the application; terminals and editors are shown and never quit.

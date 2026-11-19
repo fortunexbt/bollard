@@ -476,6 +476,19 @@ struct PolicyTests {
       uptimeText(45) == "45s" && uptimeText(3700) == "1h 1m" && uptimeText(200_000) == "2d 7h",
       "uptime")
     check(memoryText(2_500_000_000) == "2.5 GB" && memoryText(12_000_000) == "12 MB", "memory")
+    check(
+      [0, 840_000, 1_240_000, 15_300_000, 999_600_000, 1_100_000_000].map(compactBytes) == [
+        "0K", "840K", "1.2M", "15M", "1.0G", "1.1G",
+      ],
+      "rates fit four characters: \([0, 840_000, 1_240_000, 15_300_000, 999_600_000, 1_100_000_000].map(compactBytes))"
+    )
+    let sampler = SystemSampler()
+    Thread.sleep(forTimeInterval: 0.3)
+    let system = sampler.sample()
+    check(
+      (0...100).contains(system.cpu) && system.memoryUsed > 0
+        && system.memoryUsed < system.memoryTotal && system.received >= 0 && system.sent >= 0,
+      "a system sample is in range: \(system)")
   }
   func testGitCheckouts() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(

@@ -45,6 +45,16 @@ enum WorkloadSort: String, CaseIterable {
     }
   }
   func readLoginItem() { launchAtLogin = SMAppService.mainApp.status == .enabled }
+  /// What the menu bar item shows beside the icon.
+  var readouts: Set<Readout> {
+    didSet { defaults.set(readouts.map(\.rawValue), forKey: "readouts") }
+  }
+  /// The latest whole-Mac sample, while a readout that needs one is on.
+  var system: SystemSample?
+  func binding(_ readout: Readout) -> Bool { readouts.contains(readout) }
+  func set(_ readout: Readout, _ on: Bool) {
+    if on { readouts.insert(readout) } else { readouts.remove(readout) }
+  }
   var notice: String?
   var search = ""
   /// Origin filter (Claude Code, Codex, Terminal…); nil shows everything.
@@ -98,6 +108,8 @@ enum WorkloadSort: String, CaseIterable {
       defaults.stringArray(forKey: "collapsed.4") ?? [
         "Agent commands", "System & tools", "Recent",
       ])
+    readouts = Set(
+      (defaults.stringArray(forKey: "readouts") ?? ["servers"]).compactMap(Readout.init))
     notify = defaults.object(forKey: "notify") as? Bool ?? true
     hotkeyEnabled = defaults.object(forKey: "hotkey") as? Bool ?? true
   }

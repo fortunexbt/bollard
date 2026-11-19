@@ -19,10 +19,11 @@ final class MenuPanel: NSPanel {
     var scrollTest: ScrollTest?
   #endif
   var timer: Timer?
+  var sampling: Timer?
+  var sampler: SystemSampler?
   var refreshInterval: TimeInterval?
   var outsideMonitor: Any?
   var keyMonitor: Any?
-  var exposedTitle = false
   var spaceObserver: NSObjectProtocol?
   let log = Logger(subsystem: "com.fortunexbt.bollard", category: "panel")
   lazy var hotkey = Hotkey { [weak self] in self?.toggle() }
@@ -100,7 +101,10 @@ final class MenuPanel: NSPanel {
   /// Follows everything the status item and the panel's frame are derived from.
   func observe() {
     withObservationTracking {
-      _ = (store.scan?.date, store.desiredHeight, store.visible, store.hotkeyEnabled)
+      _ = (
+        store.scan?.date, store.desiredHeight, store.visible, store.hotkeyEnabled, store.readouts,
+        store.system
+      )
     } onChange: { [weak self] in
       Task { @MainActor in
         self?.updatePanel()
@@ -111,27 +115,14 @@ final class MenuPanel: NSPanel {
   func updatePanel() {
     scheduleRefresh()
     if store.hotkeyEnabled { hotkey.register() } else { hotkey.unregister() }
-    let servers = store.scan?.workloads.filter { $0.section == .servers } ?? []
-    // Never tint the button itself: a tint drops it out of the menu bar's vibrant rendering and
-    // it draws black. The template icon stays as is; only the count turns orange when a dev
-    // server is reachable from the network.
-    let exposed = servers.contains { $0.exposed }
-    let title = servers.isEmpty ? "" : " \(servers.count)"
-    if let button = item.button,
-      button.title != title || (button.attributedTitle.length > 0) != !title.isEmpty
-        || exposedTitle != exposed
-    {
-      exposedTitle = exposed
-      if title.isEmpty {
-        button.attributedTitle = NSAttributedString()
-      } else {
-        button.attributedTitle = NSAttributedString(
-          string: title,
-          attributes: [
-            .foregroundColor: exposed ? NSColor.systemOrange : NSColor.labelColor,
-            .font: NSFont.menuBarFont(ofSize: 0),
-          ])
-      }
+    scheduleSampling()
+    let workloads = store.scan?.workloads ?? []
+    let servers = workloads.filter { $0.section == .servers }
+    let title = MenuBar.title(
+      store.readouts, servers: servers.count, exposed: servers.contains { $0.exposed },
+      agents: workloads.filter { $0.section == .agents }.count, system: store.system)
+    if let button = item.button, !button.attributedTitle.isEqual(to: title) {
+      button.attributedTitle = title
     }
     guard store.visible, let button = item.button, let window = button.window,
       let screen = window.screen
@@ -171,6 +162,22 @@ final class MenuPanel: NSPanel {
       log.info(
         "opened on \(self.panel.screen?.localizedName ?? "unknown screen", privacy: .public)")
     }
+  }
+  /// The whole-Mac sampler runs only while a readout that needs it is on: every two seconds,
+  /// three system calls. The process scan keeps its own, slower timer.
+  func scheduleSampling() {
+    let wanted = store.readouts.contains { $0.sampled }
+    guard wanted != (sampling != nil) else { return }
+    sampling?.invalidate()
+    sampling = nil
+    sampler = nil
+    store.system = nil
+    guard wanted else { return }
+    sampler = SystemSampler()
+    sampling = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.store.system = self?.sampler?.sample() }
+    }
+    sampling?.tolerance = 0.3
   }
   func scheduleRefresh() {
     let interval: TimeInterval =
