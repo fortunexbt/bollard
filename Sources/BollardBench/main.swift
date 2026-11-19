@@ -2,10 +2,12 @@ import BollardCore
 import Darwin
 import Foundation
 
+/// CPU milliseconds this thread spent in `operation`. Wall time says more about what else the Mac
+/// is doing than about the scan, and a busy Mac is exactly when the panel gets opened.
 func measured<T>(_ operation: () throws -> T) rethrows -> (T, Double) {
-  let start = DispatchTime.now().uptimeNanoseconds
+  let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
   let value = try operation()
-  return (value, Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+  return (value, Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1e6)
 }
 func stats(_ values: [Double]) -> [String: Double] {
   let sorted = values.sorted()
@@ -18,6 +20,7 @@ func stats(_ values: [Double]) -> [String: Double] {
 let scanner = Scanner()
 let (first, firstScan) = try measured { try scanner.scan() }
 var scans = [Double]()
+var lean = [Double]()
 var tables = [Double]()
 var sockets = [Double]()
 var snapshots = [Double]()
@@ -25,6 +28,8 @@ var policy = [Double]()
 for _ in 0..<15 {
   let (_, full) = try measured { try scanner.scan() }
   scans.append(full)
+  let (_, quiet) = try measured { try scanner.scan(sampling: false) }
+  lean.append(quiet)
   let (_, table) = try measured { try Native.table() }
   tables.append(table)
   let (held, socket) = try measured { try Native.sockets() }
@@ -37,10 +42,11 @@ for _ in 0..<15 {
 }
 let result: [String: Any] = [
   "timestamp": ISO8601DateFormatter().string(from: Date()), "samples": 15,
-  "first_scan_ms": firstScan,
-  "steady_scan_ms": stats(scans), "process_table_ms": stats(tables),
-  "socket_walk_ms": stats(sockets),
-  "uncached_snapshot_ms": stats(snapshots), "policy_ms": stats(policy),
+  "first_scan_cpu_ms": firstScan,
+  "steady_scan_cpu_ms": stats(scans), "closed_panel_scan_cpu_ms": stats(lean),
+  "process_table_cpu_ms": stats(tables),
+  "socket_walk_cpu_ms": stats(sockets),
+  "uncached_snapshot_cpu_ms": stats(snapshots), "policy_cpu_ms": stats(policy),
   "process_count": first.count,
   "listeners": first.listeners.count, "workloads": first.workloads.count,
 ]

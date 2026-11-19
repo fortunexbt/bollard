@@ -50,29 +50,52 @@ public enum Policy {
     case agent(String)
   }
 
-  static func systemPath(_ path: String) -> Bool {
-    ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/"].contains {
+  /// What a process's path and arguments say about it, worked out once per process.
+  struct Traits: OptionSet, Sendable {
+    let rawValue: UInt8
+    /// Lives where macOS keeps its own executables.
+    static let system = Traits(rawValue: 1)
+    static let xpcService = Traits(rawValue: 2)
+    static let terminalOrEditor = Traits(rawValue: 4)
+    static let gameClient = Traits(rawValue: 8)
+    /// The main executable of an application in /Applications. The Claude desktop application
+    /// shares its name with the agent it embeds, and is not that agent.
+    static let application = Traits(rawValue: 16)
+  }
+  static func traits(path: String, args: [String], outerBundle: String?) -> Traits {
+    var traits: Traits = []
+    if ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/"].contains(where: {
       path.hasPrefix($0)
+    }) {
+      traits.insert(.system)
     }
+    if path.contains(".xpc/Contents/MacOS/") { traits.insert(.xpcService) }
+    if !path.contains(".framework/"), terminalApps.contains(where: { path.contains($0) }) {
+      traits.insert(.terminalOrEditor)
+    }
+    if let outerBundle, outerBundle.hasPrefix("/Applications/"),
+      path.hasPrefix(outerBundle + "/Contents/MacOS/")
+    {
+      traits.insert(.application)
+    }
+    if args.contains(where: {
+      $0.contains("org.prismlauncher.EntryPoint") || $0.contains("net.minecraft.client")
+        || $0.contains("KnotClient")
+    }) {
+      traits.insert(.gameClient)
+    }
+    return traits
   }
   /// The agent this process is, by its executable, its first argument or the package it runs.
-  package static func agent(_ p: Proc, _ program: Program? = nil) -> String? {
-    // The Claude desktop application shares its name with the agent it embeds.
-    if let outer = p.outerBundle, outer.hasPrefix("/Applications/"),
-      p.path.hasPrefix(outer + "/Contents/MacOS/")
-    {
-      return nil
-    }
+  package static func agent(_ p: Proc) -> String? {
+    if p.traits.contains(.application) { return nil }
     if let name = agents[p.base] ?? agents[p.argName] { return name }
-    guard
-      let program = program
-        ?? (Program.runtimes.contains { p.base.hasPrefix($0.prefix) } ? Program(p) : nil),
-      program.named
-    else { return nil }
-    return agents[program.target]
+    // A hosted agent is named by its module or package, never by a loose script of that name.
+    return p.program.runtime != nil && p.program.named ? agents[p.program.target] : nil
   }
   /// Why a terminal-bound process is part of a session rather than a workload, or nil.
-  static func session(_ p: Proc, _ program: Program) -> String? {
+  static func session(_ p: Proc) -> String? {
+    let program = p.program
     if p.named(sessions) || sessions.contains(program.target) {
       return "a login or session process"
     }
@@ -83,17 +106,16 @@ public enum Policy {
     }
     return nil
   }
-  static func role(_ p: Proc, in all: [Int32: Proc]) -> (role: Role, program: Program?) {
-    if p.pid <= 1 || p.base == "launchd" { return (.system, nil) }
+  static func role(_ p: Proc, in all: [Int32: Proc]) -> Role {
+    if p.pid <= 1 || p.base == "launchd" { return .system }
     // Bollard and whatever it was started from are the observer, never the observed.
     if p.pid == getpid() || ownAncestors.contains(p.pid) {
-      return (agent(p).map(Role.agent) ?? .session, nil)
+      return agent(p).map(Role.agent) ?? .session
     }
-    if systemPath(p.path) || p.path.contains(".xpc/Contents/MacOS/") { return (.system, nil) }
-    if let name = agent(p) { return (.agent(name), nil) }
-    if let bundle = bundle(p, in: all) { return (.app(bundle), nil) }
-    let program = Program(p)
-    return (session(p, program) != nil ? .session : .user, program)
+    if !p.traits.isDisjoint(with: [.system, .xpcService]) { return .system }
+    if let name = agent(p) { return .agent(name) }
+    if let bundle = bundle(p, in: all) { return .app(bundle) }
+    return session(p) != nil ? .session : .user
   }
 
   /// Why a process is never signalled from Bollard, or nil when it may be.
@@ -102,18 +124,11 @@ public enum Policy {
     if p.pid == getpid() { return "Bollard itself" }
     if ownAncestors.contains(p.pid) { return "the process Bollard is running under" }
     if p.uid != getuid() { return "a process owned by another user" }
-    if systemPath(p.path) { return "a macOS system process" }
+    if p.traits.contains(.system) { return "a macOS system process" }
     if agent(p) != nil { return nil }
-    if terminalApps.contains(where: { p.path.contains($0) }), !p.path.contains(".framework/") {
-      return "a terminal or editor"
-    }
-    if p.args.contains(where: {
-      $0.contains("org.prismlauncher.EntryPoint") || $0.contains("net.minecraft.client")
-        || $0.contains("KnotClient")
-    }) {
-      return "a game client"
-    }
-    return session(p, Program(p))
+    if p.traits.contains(.terminalOrEditor) { return "a terminal or editor" }
+    if p.traits.contains(.gameClient) { return "a game client" }
+    return session(p)
   }
   public static func protected(_ p: Proc) -> Bool { protection(p) != nil }
 
@@ -173,12 +188,7 @@ public enum Policy {
     for l in listeners { sockets[l.pid, default: []].append(l) }
     let children = Dictionary(grouping: all.values, by: \.parent)
     var roles: [Int32: Role] = [:]
-    var programs: [Int32: Program] = [:]
-    for p in all.values where p.uid == me && !p.zombie {
-      let found = role(p, in: all)
-      roles[p.pid] = found.role
-      programs[p.pid] = found.program
-    }
+    for p in all.values where p.uid == me && !p.zombie { roles[p.pid] = role(p, in: all) }
     func isAgent(_ pid: Int32) -> Bool {
       if case .agent = roles[pid] { return true }
       return false
@@ -284,25 +294,25 @@ public enum Policy {
         // A daemon a toolchain leaves behind, such as Xcode's ibtoold. Its interpreters are
         // different: /usr/bin/python3 is Xcode's Python, and what it runs is the user's.
         if root.parent == 1, label == nil, root.path.contains(".app/Contents/Developer/"),
-          programs[pid]?.runtime == nil
+          root.program.runtime == nil
         {
           continue
         }
       }
       // Look through wrappers to the process that does the work.
       var lead = root
-      while programs[lead.pid]?.wrapper == true {
+      while lead.program.wrapper {
         let next = (children[lead.pid] ?? []).filter { roles[$0.pid] == .user }
         guard next.count == 1 else { break }
         lead = next[0]
       }
-      let program = programs[lead.pid] ?? Program(lead)
+      let program = lead.program
       var kind = Kinds.known(program, lead)
       if kind == nil {
         // A script or wrapper that fans out: name the tree after a member that is recognised,
         // a listening one first. Utilities that only keep a job company do not name it.
         let recognised = set.members.compactMap { member -> (Proc, Kind)? in
-          guard let known = programs[member.pid].flatMap({ Kinds.known($0, member) }),
+          guard let known = Kinds.known(member.program, member),
             !["Keep awake", "Log tail"].contains(known.name)
           else { return nil }
           return (member, known)

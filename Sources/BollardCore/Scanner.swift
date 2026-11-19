@@ -70,11 +70,17 @@ public enum Native {
     return all
   }
   /// Every socket this user's processes can be reached on, one record per holding process.
+  /// Uncached: one system call per socket descriptor on the machine. The scanner asks per process
+  /// and only when that process's descriptors have changed.
   public static func sockets() throws -> [Listener] {
+    let me = getuid()
+    return try table().filter { $0.uid == me && $0.pid > 0 }.flatMap { sockets(of: $0.pid) }
+  }
+  static func sockets(of pid: Int32) -> [Listener] {
     var raw: UnsafeMutablePointer<DPSocket>?
-    let count = dp_sockets(&raw)
+    let count = dp_sockets(pid, &raw)
     defer { free(raw) }
-    guard count >= 0 else { throw SafetyError("Sockets unavailable: \(errorText(count))") }
+    guard count > 0 else { return [] }
     return UnsafeBufferPointer(start: raw, count: Int(count)).map { s in
       var s = s
       let transport: Transport =
@@ -84,6 +90,10 @@ public enum Native {
         wildcard: s.wildcard != 0, pid: s.pid, transport: transport,
         path: transport == .unix ? cString(&s.path) : "", socket: s.socket)
     }
+  }
+  static func descriptors(_ pid: Int32) -> UInt64 {
+    var signature: UInt64 = 0
+    return dp_descriptors(pid, &signature) > 0 ? signature : 0
   }
   static func addressText<T>(_ address: inout T, _ family: UInt8) -> String {
     withUnsafeBytes(of: &address) { bytes in
@@ -161,6 +171,11 @@ public final class Scanner {
   }
   /// Records by generation, with the kernel's name for the process at the time it was read.
   private var known: [Key: (proc: Proc, comm: String)] = [:]
+  /// What each process holds, with the descriptor signature it was read under. A process is asked
+  /// again when its descriptors change, and every `socketRefresh` scans regardless, because a
+  /// socket can start listening without the descriptor table changing.
+  private var held: [Key: (signature: UInt64, sockets: [Listener], age: Int)] = [:]
+  private static let socketRefresh = 15
   private var previous: [Int32: Proc] = [:]
   private var time = Date()
   private var orphans = Set<Identity>()
@@ -168,9 +183,13 @@ public final class Scanner {
   private var history: [Identity: [Sample]] = [:]
   public init() {}
 
-  public func scan() throws -> Scan { try scan(retry: true) }
+  /// `sampling` is off while the panel is closed: the menu bar only needs to know which servers
+  /// exist, so memory, CPU and working directories are left for the scan that opens it.
+  public func scan(sampling: Bool = true) throws -> Scan {
+    try scan(sampling: sampling, retry: true)
+  }
 
-  private func scan(retry: Bool) throws -> Scan {
+  private func scan(sampling: Bool, retry: Bool) throws -> Scan {
     let begin = Date()
     let entries = try Native.table()
     let me = getuid()
@@ -195,7 +214,24 @@ public final class Scanner {
     }
     known = live
     guard !all.isEmpty else { throw SafetyError("Process access unavailable.") }
-    let listeners = Policy.owners(try Native.sockets(), in: all)
+    var sockets: [Listener] = []
+    var holding: [Key: (signature: UInt64, sockets: [Listener], age: Int)] = [:]
+    for (key, entry) in live where entry.proc.uid == me && !entry.proc.zombie {
+      let signature = Native.descriptors(key.pid)
+      guard signature != 0 else { continue }
+      // Ages start spread out by PID so the periodic rereads do not all land on one scan.
+      var record = held[key] ?? (0, [], Int(key.pid) % Self.socketRefresh + Self.socketRefresh)
+      if record.signature != signature || record.age >= Self.socketRefresh {
+        record = (signature, Native.sockets(of: key.pid), Int(key.pid) % Self.socketRefresh)
+        if held[key] != nil { record.age = 0 }
+      } else {
+        record.age += 1
+      }
+      holding[key] = record
+      sockets += record.sockets
+    }
+    held = holding
+    let listeners = Policy.owners(sockets, in: all)
     let elapsed = begin.timeIntervalSince(time)
     for (id, p) in all where p.uid == me {
       if let old = previous[id], old.identity == p.identity, old.parent != 1, p.parent == 1,
@@ -218,14 +254,19 @@ public final class Scanner {
     // An exec into a program of the same name is only visible in the process generation. Check it
     // for what is on display, where a stale record would mislabel a row or refuse a Stop.
     var stale = false
-    for p in workloads.flatMap(\.members) where Native.generation(p.pid) != p.identity.version {
+    // Runtimes re-exec themselves in their first moments, so only young processes are checked.
+    let young = UInt64(max(0, begin.timeIntervalSince1970 - 30) * 1e6)
+    for p in workloads.flatMap(\.members) where p.identity.start > young {
+      // A process that has exited reads as generation 0. That is churn, not a stale record.
+      let now = Native.generation(p.pid)
+      guard now != 0, now != p.identity.version else { continue }
       known[Key(pid: p.pid, start: p.identity.start)] = nil
       stale = true
     }
-    if stale, retry { return try scan(retry: false) }
+    if stale, retry { return try scan(sampling: sampling, retry: false) }
     // Resource sampling only for processes that are displayed.
     var sampled: [Int32: Proc] = [:]
-    for index in workloads.indices {
+    for index in workloads.indices where sampling {
       for m in workloads[index].members.indices {
         var p = workloads[index].members[m]
         if let s = sampled[p.pid] {
@@ -266,7 +307,8 @@ public final class Scanner {
       known[Key(pid: pid, start: p.identity.start)]?.proc.cpuTime = p.cpuTime
     }
     previous = all
-    time = begin
+    // CPU is the time used since the last sampling scan, however many lean scans came between.
+    if sampling { time = begin }
     return Scan(
       workloads: workloads, listeners: listeners, count: all.count,
       duration: Date().timeIntervalSince(begin), date: Date())
@@ -277,5 +319,5 @@ public final class Scanner {
 public actor ProcessMonitor {
   private let scanner = Scanner()
   public init() {}
-  public func scan() throws -> Scan { try scanner.scan() }
+  public func scan(sampling: Bool) throws -> Scan { try scanner.scan(sampling: sampling) }
 }

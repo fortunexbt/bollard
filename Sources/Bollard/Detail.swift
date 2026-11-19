@@ -165,7 +165,7 @@ struct Detail: View {
       ForEach(w.members, id: \.identity) { p in
         HStack(spacing: 8) {
           Text(String(p.pid)).frame(width: 44, alignment: .trailing).foregroundStyle(.tertiary)
-          Text(Program(p).summary).lineLimit(1).truncationMode(.middle)
+          Text(p.program.summary).lineLimit(1).truncationMode(.middle)
           if p.suspended { Text("suspended").foregroundStyle(.orange) }
           Spacer(minLength: 4)
           Text(memoryText(p.memory)).foregroundStyle(.tertiary)

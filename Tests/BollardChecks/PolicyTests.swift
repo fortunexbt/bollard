@@ -71,10 +71,10 @@ struct PolicyTests {
     check(Policy.workloads(all, listeners: [l(3000, 12)], now: 9).count == 2, "then it is")
   }
   func testProgramsAreNamedNotGuessed() {
-    func program(_ path: String, _ args: [String]) -> Program { Program(p(1, 1, path, args)) }
+    func program(_ path: String, _ args: [String]) -> Program { p(1, 1, path, args).program }
     func kind(_ path: String, _ args: [String], cwd: String = "/tmp/project") -> String {
       let proc = p(99, 10, path, args, cwd: cwd)
-      return (Kinds.known(Program(proc), proc) ?? Kinds.fallback(Program(proc), proc)).name
+      return (Kinds.known(proc.program, proc) ?? Kinds.fallback(proc.program, proc)).name
     }
     // The old substring matcher called all of these Vite, Astro, Remix, Minecraft or a tool.
     check(

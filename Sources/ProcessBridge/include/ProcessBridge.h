@@ -43,9 +43,12 @@ typedef struct {
   uint8_t address[16];
   char path[104];  // Unix-domain only
 } DPSocket;
-// Listening TCP, bound UDP and listening Unix-domain sockets, one record per holding process.
-// Returns the count or a negative errno; the caller frees *out.
-int dp_sockets(DPSocket **out);
+// Listening TCP, bound UDP and listening Unix-domain sockets held by one process. Returns the
+// count or a negative errno; the caller frees *out. One system call per socket descriptor.
+int dp_sockets(int32_t pid, DPSocket **out);
+// How many descriptors the process has open, and a signature of their numbers and types. One
+// system call, so a caller can tell cheaply whether dp_sockets needs asking again.
+int dp_descriptors(int32_t pid, uint64_t *signature);
 
 // Kernel-checked PID generation. Never falls back to kill(pid).
 int dp_signal(int32_t pid, uint64_t start, uint64_t unique, int32_t version, int sig);

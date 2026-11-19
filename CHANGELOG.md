@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.1 — 2026-11-19
+
+The panel stuttered, badly on a busy Mac. Scans cost about a tenth of the CPU they did.
+
+- The panel asked macOS whether Bollard launches at login every time it redrew, a blocking call on the main thread. It is read when the panel opens.
+- What a process runs, and what its path says about it, is worked out once when the process is first seen. 3.0.0 re-parsed every command line on every scan.
+- A process's sockets are read again only when its open files change, with a periodic reread.
+- An exited process is no longer mistaken for one that had exec'd, which made a busy Mac scan twice.
+- While the panel is closed, scans skip memory, CPU and working directories.
+- The editor and agent lists in each row's menu and the application icons are looked up once.
+
 ## 3.0.0 — 2026-11-18
 
 Discovery, the panel and the platform floor are new. Needs macOS 26 or later.

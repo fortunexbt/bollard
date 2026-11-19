@@ -47,9 +47,10 @@ public struct Program: Sendable, Equatable {
     "java": ["-cp", "-classpath", "--class-path", "-p", "--module-path", "--add-opens"],
   ]
 
-  public init(_ p: Proc) {
-    var args = p.args
-    var exe = p.base
+  /// Parsed once per process, when its record is created; see `Proc.program`.
+  init(base: String, comm: String, args: [String]) {
+    var args = args
+    var exe = base
     // Node's process.title and setproctitle collapse the command line into argv[0].
     if let first = args.first, first.contains(" "),
       !first.hasPrefix("/") || (args.count == 1 && !FileManager.default.fileExists(atPath: first))
@@ -62,7 +63,7 @@ public struct Program: Sendable, Equatable {
     let rest = Array(args.dropFirst())
     let positional = rest.filter { !$0.hasPrefix("-") }
     target = exe
-    summary = p.comm
+    summary = comm
 
     if Policy.shells.contains(exe) {
       if let flag = rest.firstIndex(where: {
@@ -84,7 +85,7 @@ public struct Program: Sendable, Equatable {
       summary = ([exe] + rest.prefix(3)).joined(separator: " ")
     } else {
       words = positional.prefix(4).map { $0.lowercased() }
-      summary = ([args.first.map(Self.name) ?? p.comm] + rest.prefix(3)).joined(separator: " ")
+      summary = ([args.first.map(Self.name) ?? comm] + rest.prefix(3)).joined(separator: " ")
     }
     if summary.count > 60 { summary = String(summary.prefix(59)) + "…" }
   }

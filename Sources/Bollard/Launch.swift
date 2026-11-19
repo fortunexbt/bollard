@@ -27,7 +27,8 @@ enum Launcher {
     try await open(directory: r.directory, command: r.command)
   }
   /// Installed coding agents that can be started in a project directory.
-  static var agents: [(name: String, path: String)] {
+  /// Probed once: both lists sit in every row's context menu, which is rebuilt on each redraw.
+  static let agents: [(name: String, path: String)] = {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let bins = [
       "\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.bun/bin",
@@ -40,17 +41,17 @@ enum Launcher {
       bins.lazy.map { "\($0)/\(binary)" }.first { FileManager.default.isExecutableFile(atPath: $0) }
         .map { (name, $0) }
     }
-  }
+  }()
   static func agent(_ path: String, in directory: String) async throws {
     try await open(directory: directory, command: shellQuote(path))
   }
   /// Editors and terminals installed on this Mac, for "Open in".
-  static var editors: [String] {
+  static let editors: [String] = {
     ["Visual Studio Code", "Cursor", "Zed", "Xcode", "Ghostty", "iTerm", "Warp", "Terminal"].filter
     {
       FileManager.default.fileExists(atPath: appPath($0))
     }
-  }
+  }()
   static func appPath(_ name: String) -> String {
     name == "Terminal" ? terminal.path : "/Applications/\(name).app"
   }

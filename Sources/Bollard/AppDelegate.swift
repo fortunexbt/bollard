@@ -152,6 +152,7 @@ final class MenuPanel: NSPanel {
       if panel.isVisible { panel.orderOut(nil) }
       store.visible = true
       store.opened += 1
+      store.readLoginItem()
       scheduleRefresh()
       store.refresh()
       updatePanel()

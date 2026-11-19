@@ -1,6 +1,7 @@
 import AppKit
 import BollardCore
 import Foundation
+import ServiceManagement
 import SwiftUI
 
 enum WorkloadSort: String, CaseIterable {
@@ -28,6 +29,22 @@ enum WorkloadSort: String, CaseIterable {
   var hotkeyEnabled: Bool {
     didSet { defaults.set(hotkeyEnabled, forKey: "hotkey") }
   }
+  /// Mirrors the login item. Asking macOS is a blocking round trip to a system service, so it is
+  /// read when the panel opens and never while drawing.
+  var launchAtLogin = false {
+    didSet {
+      guard launchAtLogin != oldValue, launchAtLogin != (SMAppService.mainApp.status == .enabled)
+      else { return }
+      do {
+        launchAtLogin
+          ? try SMAppService.mainApp.register() : try SMAppService.mainApp.unregister()
+      } catch {
+        self.error = "Launch at login: \(error.localizedDescription)"
+        launchAtLogin = oldValue
+      }
+    }
+  }
+  func readLoginItem() { launchAtLogin = SMAppService.mainApp.status == .enabled }
   var notice: String?
   var search = ""
   /// Origin filter (Claude Code, Codex, Terminal…); nil shows everything.
@@ -144,7 +161,7 @@ enum WorkloadSort: String, CaseIterable {
         }
       }
       do {
-        let next = try await monitor.scan()
+        let next = try await monitor.scan(sampling: visible)
         let previous = scan
         scan = next
         error = nil

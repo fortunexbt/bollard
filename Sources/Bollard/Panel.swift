@@ -1,6 +1,5 @@
 import AppKit
 import BollardCore
-import ServiceManagement
 import SwiftUI
 
 enum Theme {
@@ -30,7 +29,8 @@ struct Panel: View {
   @State private var bottomHeight: Double = 0
 
   private var lanes: [(lane: Lane, rows: [Workload])] {
-    Lane.allCases.map { ($0, store.lane($0)) }.filter { !$0.rows.isEmpty }
+    let rows = Dictionary(grouping: store.rows, by: \.section)
+    return Lane.allCases.compactMap { lane in rows[lane].map { (lane, $0) } }
   }
   var body: some View {
     let lanes = lanes
@@ -123,7 +123,8 @@ struct Panel: View {
     }
     Button("Refresh") { store.refresh() }.keyboardShortcut("r")
     Divider()
-    let stoppable = store.servers.contains { $0.blocked == nil }
+    let stoppable =
+      store.scan?.workloads.contains { $0.section == .servers && $0.blocked == nil } ?? false
     Button(store.filter.map { "Stop All \($0) Servers" } ?? "Stop All Servers") {
       store.stopAll(.terminate)
     }.disabled(!stoppable)
@@ -131,15 +132,7 @@ struct Panel: View {
     Divider()
     Toggle("Notify When Servers Start or Stop", isOn: $store.notify)
     Toggle("Global Shortcut \(Hotkey.description)", isOn: $store.hotkeyEnabled)
-    Toggle(
-      "Launch at Login",
-      isOn: Binding(
-        get: { SMAppService.mainApp.status == .enabled },
-        set: { enabled in
-          do {
-            enabled ? try SMAppService.mainApp.register() : try SMAppService.mainApp.unregister()
-          } catch { store.error = error.localizedDescription }
-        }))
+    Toggle("Launch at Login", isOn: $store.launchAtLogin)
     Divider()
     Button("Copy MCP Setup for Claude Code") {
       store.copy(

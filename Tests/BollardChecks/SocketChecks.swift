@@ -3,8 +3,11 @@ import Foundation
 
 /// Opens a listener in this process and requires the scanner's socket source to report it with
 /// this PID. A source that silently returns nothing, as macOS 27 does for the raw kernel table,
-/// fails here whatever lsof says.
+/// fails here whatever lsof says. The scanner has already scanned once, so the listener has to be
+/// picked up through the change in this process's descriptors, the way a running app sees it.
 func ownListenerChecks() throws {
+  let scanner = Scanner()
+  _ = try scanner.scan()
   let fd = socket(AF_INET, SOCK_STREAM, 0)
   guard fd >= 0 else { throw SafetyError("Could not create a socket.") }
   defer { close(fd) }
@@ -28,7 +31,7 @@ func ownListenerChecks() throws {
     throw SafetyError(
       "Own listener on port \(port) missing from \(found.count) listeners")
   }
-  let scanned = try Scanner().scan()
+  let scanned = try scanner.scan()
   guard scanned.listeners.contains(where: { $0.pid == getpid() && $0.port == port }) else {
     throw SafetyError("Own listener on port \(port) missing from the scan")
   }
@@ -40,9 +43,11 @@ func ownListenerChecks() throws {
 func socketParityChecks() throws {
   var checked = 0
   var compared = 0
+  // One scanner throughout, so the rounds after the first compare its cached sockets with lsof.
+  let scanner = Scanner()
   for _ in 0..<12 {
     let before = try lsofListeners()
-    let native = try Scanner().scan().listeners.filter { $0.transport == .tcp }
+    let native = try scanner.scan().listeners.filter { $0.transport == .tcp }
     let after = try lsofListeners()
     let ports = Set(native.map(\.port))
     for port in Set(before.keys).intersection(after.keys) {

@@ -1,5 +1,19 @@
 # Discovery performance
 
+## 2026-11-19 scan cost under load (3.0.1)
+
+`BollardBench` now reports CPU time on the scanning thread, because wall time on a busy Mac measures the other work. 3.0.0 and 3.0.1 were built and run minutes apart on the same Mac while it was saturated (10 cores, load average about 150, 900 to 930 processes, about 76 workloads and 74 sockets). `scan-2026-11-19.json` is the 3.0.1 run.
+
+| CPU per scan, median | 3.0.0 | 3.0.1 |
+|---|---:|---:|
+| Scan with the panel open | 104 ms | 11 to 19 ms |
+| Scan with the panel closed | 99 ms | 9 to 12 ms |
+| Policy alone | 44 ms | 3 to 5 ms |
+
+The range for 3.0.1 is across three runs; it moves with how many processes were born since the previous scan, each of which is read and parsed once. The uncached snapshot a Stop takes went the other way, from 22 ms to about 80 ms, because parsing moved into the process record.
+
+On the main thread, an 8 second sample of the open panel spent 145 ms in `Panel.body` in 3.0.0, 141 ms of it inside `-[SMAppService status]`, and 3 ms in 3.0.1.
+
 ## 2026-11-18 structural discovery (3.0.0)
 
 `scan-2026-11-18.json` is `BollardBench` (release) on macOS 27.2 with 788 processes, 25 sockets and 14 workloads, 15 samples.

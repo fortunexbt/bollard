@@ -103,77 +103,90 @@ int dp_usage(int32_t pid, DPUsage *out) {
   return 1;
 }
 
+// The descriptors of one process, read into a buffer that grows to fit. Returns the count. One
+// system call unless the buffer turns out too small: a full buffer may be a truncated answer.
+static int dp_list_fds(int32_t pid, struct proc_fdinfo **fds, int *capacity) {
+  for (;;) {
+    if (!*fds) {
+      if (!*capacity) *capacity = 512 * (int)sizeof(**fds);
+      *fds = malloc(*capacity);
+      if (!*fds) { *capacity = 0; return 0; }
+    }
+    int got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, *fds, *capacity);
+    if (got <= 0) return 0;
+    if (got < *capacity) return got / (int)sizeof(**fds);
+    free(*fds);
+    *fds = NULL;
+    *capacity *= 2;
+  }
+}
+
+int dp_descriptors(int32_t pid, uint64_t *signature) {
+  static _Thread_local struct proc_fdinfo *fds;
+  static _Thread_local int capacity;
+  int count = dp_list_fds(pid, &fds, &capacity);
+  uint64_t hash = 1469598103934665603ull;  // FNV-1a over each descriptor's number and type
+  for (int k = 0; k < count; k++) {
+    hash = (hash ^ (uint64_t)(uint32_t)fds[k].proc_fd) * 1099511628211ull;
+    hash = (hash ^ fds[k].proc_fdtype) * 1099511628211ull;
+  }
+  *signature = hash;
+  return count;
+}
+
 // Every socket a workload can be reached on: listening TCP, bound and unconnected UDP, and
-// listening Unix-domain sockets, read from the descriptors of each process this user may inspect.
-// macOS 27 withholds the kernel socket table (net.inet.tcp.pcblist_n) from apps, so descriptors are
-// the one source that works everywhere and they name the real holder, not the last toucher. A
-// socket inherited across fork is reported once per holder; the caller picks the owner.
-int dp_sockets(DPSocket **out) {
+// listening Unix-domain sockets, read from the process's descriptors. macOS 27 withholds the
+// kernel socket table (net.inet.tcp.pcblist_n) from apps, so descriptors are the one source that
+// works everywhere and they name the real holder, not the last toucher. A socket inherited across
+// fork is reported by each holder; the caller picks the owner.
+int dp_sockets(int32_t pid, DPSocket **out) {
   *out = NULL;
-  int expected = proc_listallpids(NULL, 0);
-  if (expected <= 0) return -errno;
-  int bytes = (expected + 64) * (int)sizeof(pid_t);
-  pid_t *pids = malloc(bytes);
-  if (!pids) return -ENOMEM;
-  int n = proc_listallpids(pids, bytes);
-  if (n <= 0) { int e = errno; free(pids); return -e; }
   struct proc_fdinfo *fds = NULL;
   DPSocket *result = NULL;
   int fdcap = 0, count = 0, capacity = 0;
-  for (int i = 0; i < n; i++) {
-    int needed = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, NULL, 0);
-    if (needed <= 0) continue;
-    if (needed + 64 * (int)sizeof(*fds) > fdcap) {
-      free(fds);
-      fdcap = needed + 64 * (int)sizeof(*fds);
-      fds = malloc(fdcap);
-      if (!fds) { free(pids); free(result); return -ENOMEM; }
+  int total = dp_list_fds(pid, &fds, &fdcap);
+  for (int k = 0; k < total; k++) {
+    if (fds[k].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
+    struct socket_fdinfo info;
+    if (proc_pidfdinfo(pid, fds[k].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info)) != sizeof(info)) continue;
+    const struct socket_info *si = &info.psi;
+    DPSocket s = {0};
+    const struct in_sockinfo *in = NULL;
+    if (si->soi_kind == SOCKINFO_TCP) {
+      if (si->soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
+      in = &si->soi_proto.pri_tcp.tcpsi_ini;
+      s.transport = DP_TCP;
+    } else if (si->soi_kind == SOCKINFO_IN && si->soi_protocol == IPPROTO_UDP) {
+      in = &si->soi_proto.pri_in;
+      if (in->insi_lport == 0 || in->insi_fport != 0) continue;
+      s.transport = DP_UDP;
+    } else if (si->soi_kind == SOCKINFO_UN) {
+      const char *path = si->soi_proto.pri_un.unsi_addr.ua_sun.sun_path;
+      // Skip the per-run scratch sockets runtimes drop in the temporary directory.
+      if (!(si->soi_options & SO_ACCEPTCONN) || !path[0] || strstr(path, "/var/folders/")) continue;
+      s.transport = DP_UNIX;
+      strlcpy(s.path, path, sizeof(s.path));
+    } else continue;
+    if (in) {
+      s.port = ntohs((uint16_t)in->insi_lport);
+      int length = (in->insi_vflag & INI_IPV4) ? 4 : 16;
+      s.family = length == 4 ? 4 : 6;
+      memcpy(s.address, (const uint8_t *)&in->insi_laddr + (length == 4 ? 12 : 0), length);
+      uint8_t any = 0;
+      for (int b = 0; b < length; b++) any |= s.address[b];
+      s.wildcard = any == 0;
     }
-    int got = proc_pidinfo(pids[i], PROC_PIDLISTFDS, 0, fds, fdcap);
-    for (int k = 0; k < got / (int)sizeof(*fds); k++) {
-      if (fds[k].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
-      struct socket_fdinfo info;
-      if (proc_pidfdinfo(pids[i], fds[k].proc_fd, PROC_PIDFDSOCKETINFO, &info, sizeof(info)) != sizeof(info)) continue;
-      const struct socket_info *si = &info.psi;
-      DPSocket s = {0};
-      const struct in_sockinfo *in = NULL;
-      if (si->soi_kind == SOCKINFO_TCP) {
-        if (si->soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
-        in = &si->soi_proto.pri_tcp.tcpsi_ini;
-        s.transport = DP_TCP;
-      } else if (si->soi_kind == SOCKINFO_IN && si->soi_protocol == IPPROTO_UDP) {
-        in = &si->soi_proto.pri_in;
-        if (in->insi_lport == 0 || in->insi_fport != 0) continue;
-        s.transport = DP_UDP;
-      } else if (si->soi_kind == SOCKINFO_UN) {
-        const char *path = si->soi_proto.pri_un.unsi_addr.ua_sun.sun_path;
-        // Skip the per-run scratch sockets runtimes drop in the temporary directory.
-        if (!(si->soi_options & SO_ACCEPTCONN) || !path[0] || strstr(path, "/var/folders/")) continue;
-        s.transport = DP_UNIX;
-        strlcpy(s.path, path, sizeof(s.path));
-      } else continue;
-      if (in) {
-        s.port = ntohs((uint16_t)in->insi_lport);
-        int length = (in->insi_vflag & INI_IPV4) ? 4 : 16;
-        s.family = length == 4 ? 4 : 6;
-        memcpy(s.address, (const uint8_t *)&in->insi_laddr + (length == 4 ? 12 : 0), length);
-        uint8_t any = 0;
-        for (int b = 0; b < length; b++) any |= s.address[b];
-        s.wildcard = any == 0;
-      }
-      s.pid = pids[i];
-      s.socket = si->soi_so;
-      if (count == capacity) {
-        capacity = capacity ? capacity * 2 : 256;
-        DPSocket *grown = realloc(result, capacity * sizeof(DPSocket));
-        if (!grown) { free(fds); free(pids); free(result); return -ENOMEM; }
-        result = grown;
-      }
-      result[count++] = s;
+    s.pid = pid;
+    s.socket = si->soi_so;
+    if (count == capacity) {
+      capacity = capacity ? capacity * 2 : 8;
+      DPSocket *grown = realloc(result, capacity * sizeof(DPSocket));
+      if (!grown) { free(fds); free(result); return -ENOMEM; }
+      result = grown;
     }
+    result[count++] = s;
   }
   free(fds);
-  free(pids);
   *out = result;
   return count;
 }

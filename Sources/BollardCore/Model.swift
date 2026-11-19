@@ -38,26 +38,22 @@ public struct Proc: Sendable {
   public var suspended: Bool { status == 4 }
   public var zombie: Bool { status == 5 }
   public var command: String { args.map(shellQuote).joined(separator: " ") }
-  /// Lowercased name from the first argument; version-named binaries such as Claude Code's
-  /// `versions/2.1.309` still identify themselves there.
-  public var argName: String {
-    args.first.map { $0.split(separator: "/").last.map { $0.lowercased() } ?? "" } ?? ""
-  }
   public func named(_ names: Set<String>) -> Bool {
     names.contains(base) || names.contains(argName)
   }
+  // Everything below is derived from the path and arguments, which never change for a process
+  // generation, so it is worked out once here and not on every scan.
+  /// Lowercased name from the first argument; version-named binaries such as Claude Code's
+  /// `versions/2.1.309` still identify themselves there.
+  public let argName: String
+  /// What it runs, with interpreters, runners and rewritten titles looked through.
+  public let program: Program
   /// Outermost application bundle on the executable path, if any.
-  public var outerBundle: String? {
-    guard let range = path.range(of: ".app/") else { return nil }
-    return String(path[..<range.lowerBound]) + ".app"
-  }
+  public let outerBundle: String?
   /// The application this executable is part of. Runtimes and toolchains that ship inside a bundle,
   /// such as Xcode's Python or Homebrew's Python.app, run the user's code and belong to no app.
-  public var appBundle: String? {
-    guard let outer = outerBundle else { return nil }
-    if path.contains(".xpc/") || path.contains(".appex/") { return outer }
-    return outer.contains(".framework/") || path.contains("/Contents/Developer/") ? nil : outer
-  }
+  public let appBundle: String?
+  let traits: Policy.Traits
   public init(
     pid: Int32, parent: Int32, start: UInt64 = 1, unique: UInt64? = nil, version: Int32 = 1,
     parentUnique: UInt64 = 0, pgid: Int32? = nil, uid: UInt32 = getuid(), path: String,
@@ -75,6 +71,18 @@ public struct Proc: Sendable {
     self.cpuTime = cpuTime
     comm = String(path.split(separator: "/").last ?? "")
     base = comm.lowercased()
+    argName = args.first.map { $0.split(separator: "/").last.map { $0.lowercased() } ?? "" } ?? ""
+    program = Program(base: base, comm: comm, args: args)
+    let outer = path.range(of: ".app/").map { String(path[..<$0.lowerBound]) + ".app" }
+    outerBundle = outer
+    if let outer, path.contains(".xpc/") || path.contains(".appex/") {
+      appBundle = outer
+    } else if let outer, !outer.contains(".framework/"), !path.contains("/Contents/Developer/") {
+      appBundle = outer
+    } else {
+      appBundle = nil
+    }
+    traits = Policy.traits(path: path, args: args, outerBundle: outer)
   }
 }
 

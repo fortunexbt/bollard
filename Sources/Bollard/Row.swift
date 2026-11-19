@@ -4,10 +4,17 @@ import SwiftUI
 
 /// The square at the head of a row: the application's own icon, or a symbol in the family colour.
 struct Tile: View {
+  private static let icons = NSCache<NSString, NSImage>()
+  static func icon(_ bundle: String) -> NSImage {
+    if let hit = icons.object(forKey: bundle as NSString) { return hit }
+    let image = NSWorkspace.shared.icon(forFile: bundle)
+    icons.setObject(image, forKey: bundle as NSString)
+    return image
+  }
   var w: Workload
   var body: some View {
     if w.section == .apps, let bundle = w.root.outerBundle {
-      Image(nsImage: NSWorkspace.shared.icon(forFile: bundle)).resizable()
+      Image(nsImage: Self.icon(bundle)).resizable()
         .frame(width: 28, height: 28).accessibilityHidden(true)
     } else {
       let tint = Theme.tint(w)
