@@ -56,13 +56,14 @@ if flags.contains("--help") || flags.contains("-h") {
 {
   guard let target = positional.first else { fail("Usage: bollard \(action.key) <port|pid|name>") }
   do {
-    let result = CLI.stop(target, action.value, in: try BollardCore.Scanner().scan())
+    let result = CLI.stop(
+      target, action.value, in: try BollardCore.Scanner().scan(apps: openApplications()))
     print(result.report.joined(separator: "\n"))
     exit(result.found ? (result.stillRunning ? 2 : 0) : 3)
   } catch { fail(error.localizedDescription) }
 } else if flags.contains("--list") || flags.contains("--json") || !positional.isEmpty {
   do {
-    let scan = try BollardCore.Scanner().scan()
+    let scan = try BollardCore.Scanner().scan(apps: openApplications())
     let query = positional.first ?? ""
     let rows = scan.workloads.filter { query.isEmpty || CLI.matches(query, $0) }
     if flags.contains("--json") {

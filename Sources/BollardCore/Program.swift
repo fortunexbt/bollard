@@ -30,7 +30,7 @@ public struct Program: Sendable, Equatable {
   static let runners: Set<String> = [
     "npm", "pnpm", "yarn", "npx", "pnpx", "bunx", "uv", "uvx", "pipx", "poetry", "pipenv", "pdm",
     "hatch", "rye", "cargo", "go", "make", "just", "task", "mise", "doppler", "dotenvx", "env",
-    "nice", "nohup", "time", "caffeinate", "stdbuf", "setsid",
+    "nice", "nohup", "time", "timeout", "gtimeout", "caffeinate", "stdbuf", "setsid",
   ]
   /// Subcommands of a runner that say "run the next word" and carry no meaning of their own.
   static let runnerNoise: Set<String> = ["run", "exec", "x", "dlx", "tool", "run-script", "--"]

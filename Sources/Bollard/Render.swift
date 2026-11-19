@@ -16,12 +16,16 @@
       func spin(_ seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
       }
-      // Two scans, so CPU has a baseline.
+      // Two scans as an open panel makes them, so memory is sampled and CPU has a baseline.
+      store.visible = true
       store.refresh()
       spin(1.2)
       store.refresh()
       spin(0.4)
       store.search = search
+      // Expanding lanes for the picture must not outlive it: the set is saved as a preference.
+      let collapsed = store.collapsed
+      defer { store.collapsed = collapsed }
       if let target {
         store.collapsed = []
         store.selected =

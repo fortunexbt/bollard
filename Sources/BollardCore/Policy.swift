@@ -106,8 +106,11 @@ public enum Policy {
     }
     return nil
   }
-  static func role(_ p: Proc, in all: [Int32: Proc]) -> Role {
+  static func role(_ p: Proc, in all: [Int32: Proc], apps: Set<Int32> = []) -> Role {
     if p.pid <= 1 || p.base == "launchd" { return .system }
+    // An application the user has open is an application wherever it is installed, Apple's
+    // included.
+    if apps.contains(p.pid), let bundle = p.outerBundle { return .app(bundle) }
     // Bollard and whatever it was started from are the observer, never the observed.
     if p.pid == getpid() || ownAncestors.contains(p.pid) {
       return agent(p).map(Role.agent) ?? .session
@@ -180,7 +183,8 @@ public enum Policy {
 
   public static func workloads(
     _ all: [Int32: Proc], listeners: [Listener], labels: [Int32: String] = [:],
-    orphans: Set<Identity> = [], now: Double = Date().timeIntervalSince1970,
+    orphans: Set<Identity> = [], apps: Set<Int32> = [],
+    now: Double = Date().timeIntervalSince1970,
     checkout: (String) -> Checkout? = Git.checkout
   ) -> [Workload] {
     let me = getuid()
@@ -188,7 +192,9 @@ public enum Policy {
     for l in listeners { sockets[l.pid, default: []].append(l) }
     let children = Dictionary(grouping: all.values, by: \.parent)
     var roles: [Int32: Role] = [:]
-    for p in all.values where p.uid == me && !p.zombie { roles[p.pid] = role(p, in: all) }
+    for p in all.values where p.uid == me && !p.zombie {
+      roles[p.pid] = role(p, in: all, apps: apps)
+    }
     func isAgent(_ pid: Int32) -> Bool {
       if case .agent = roles[pid] { return true }
       return false
@@ -242,16 +248,21 @@ public enum Policy {
         result[p.identity] = row
 
       case .app(let bundle):
-        guard !tcp.isEmpty else { continue }
         // Promote to the application's main process so one row owns every helper's port.
         var root = p
         while let parent = all[root.parent], parent.outerBundle == bundle, !protected(parent) {
           root = parent
         }
-        let blocked = protection(root)
-        let set =
-          blocked == nil
-          ? killSet(root.pid, all, children: children) : (members: [Proc](), excluded: [Proc]())
+        // Open applications are listed once, from their main process. Others only when they
+        // listen.
+        let open = apps.contains(root.pid)
+        guard !tcp.isEmpty || (open && p.pid == root.pid) else { continue }
+        // Quit goes through the application itself, so Apple's own can be asked like any other.
+        // A terminal or editor never is: quitting it takes down what runs inside it.
+        let blocked =
+          root.traits.contains(.terminalOrEditor)
+          ? "a terminal or editor" : open && root.traits.contains(.system) ? nil : protection(root)
+        let set = killSet(root.pid, all, children: children)
         let own = set.members.flatMap { sockets[$0.pid] ?? [] }.filter { $0.transport == .tcp }
         result[root.identity] = Workload(
           root: root, members: set.members, excluded: set.excluded,
@@ -259,7 +270,7 @@ public enum Policy {
           listeners: sorted((result[root.identity]?.listeners ?? []) + own + tcp),
           provenance: provenance(of: root, in: all, labels: labels),
           origin: origin(of: root, in: all, labels: labels), orphan: false,
-          section: bundle.hasPrefix("/System/") ? .system : .apps, cautions: [],
+          section: open || !bundle.hasPrefix("/System/") ? .apps : .system, cautions: [],
           blocked: blocked.map { "Bollard never quits \($0)." }, launchdLabel: labels[root.pid])
 
       case .system, .session:

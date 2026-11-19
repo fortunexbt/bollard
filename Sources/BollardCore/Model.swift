@@ -144,11 +144,6 @@ public enum Lane: String, CaseIterable, Sendable {
   case system = "System & tools"
 }
 
-extension Lane {
-  /// The heading shown in the panel. The raw value is the stable name in `--json`.
-  public var title: String { self == .apps ? "Apps with open ports" : rawValue }
-}
-
 public struct Sample: Sendable, Equatable {
   public var cpu: Double
   public var memory: UInt64

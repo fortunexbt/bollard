@@ -217,6 +217,33 @@ struct PolicyTests {
       "a runtime shipped inside a bundle runs the user's code: \(job.name) \(job.detail)")
     check(row(rows, 56)?.blocked == "Bollard never quits a macOS system process.", "Terminal")
   }
+  func testOpenApplicationsAreListed() {
+    let all: [Int32: Proc] = [
+      60: p(
+        60, 1,
+        "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari",
+        ["Safari"]),
+      61: p(61, 1, "/Applications/Notes.app/Contents/MacOS/Notes", ["Notes"]),
+      62: p(
+        62, 61,
+        "/Applications/Notes.app/Contents/Frameworks/Notes Helper.app/Contents/MacOS/Notes Helper",
+        ["Notes Helper"]),
+      63: p(
+        63, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal", ["Terminal"]),
+      64: p(64, 1, "/Applications/Menulet.app/Contents/MacOS/Menulet", ["Menulet"]),
+    ]
+    check(Policy.workloads(all, listeners: []).isEmpty, "without the open set, only listeners")
+    let rows = Policy.workloads(all, listeners: [], apps: [60, 61, 63])
+    check(
+      rows.map(\.name) == ["Notes", "Safari", "Terminal"]
+        && rows.allSatisfy { $0.section == .apps },
+      "every open application, and not the menu bar extra nobody opened: \(rows.map(\.name))")
+    check(row(rows, 61)?.members.map(\.pid) == [61, 62], "with its helpers")
+    check(row(rows, 60)?.blocked == nil, "Apple's applications can be asked to quit")
+    check(
+      row(rows, 63)?.blocked == "Bollard never quits a terminal or editor.", "a terminal cannot")
+    check(Policy.protection(all[60]!) != nil, "and none of them is ever signalled as a process")
+  }
   func testTerminalSessionsAreNotWorkloads() {
     func foreground(_ id: Int32, _ path: String, _ args: [String]) -> Proc {
       var proc = p(id, 10, path, args)
@@ -491,6 +518,7 @@ struct PolicyTests {
     t.testWrappersLeadToTheWork()
     t.testAgentsAreRowsWithTheirHelpers()
     t.testApplicationsAndTheirHelpers()
+    t.testOpenApplicationsAreListed()
     t.testTerminalSessionsAreNotWorkloads()
     t.testLaunchdJobs()
     t.testSocketOwnersAndOrigins()
@@ -503,7 +531,7 @@ struct PolicyTests {
     try t.testDeclaredControllers()
     portChecks()
     try binaryChecks()
-    print("16 policy checks passed")
+    print("17 policy checks passed")
     if !CommandLine.arguments.contains("--policy-only") {
       try ownListenerChecks()
       try socketParityChecks()

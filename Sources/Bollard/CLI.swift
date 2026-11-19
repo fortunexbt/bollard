@@ -1,7 +1,15 @@
+import AppKit
 import BollardCore
 import Foundation
 
-let version = "3.0.2"
+let version = "3.1.0"
+
+/// The applications the user has open: the ones with a Dock icon.
+func openApplications() -> Set<Int32> {
+  Set(
+    NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map(
+      \.processIdentifier))
+}
 
 enum CLI {
   static func describe(_ w: Workload) -> [String: Any] {

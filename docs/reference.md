@@ -10,7 +10,7 @@ Bollard lists every long-lived process tree that belongs to you, unless it is pa
 - **Background** is the same without a port. Scripts, workers, watchers, tunnels, launch agents. Unix-domain sockets are shown in the detail. Orphans are marked.
 - **Agent commands** is what an agent is running through its shell right now without a port: test runs, builds, the loops it waits in. Collapsed until you open it.
 - **Agents** are coding-agent sessions, with the helpers each started directly (its MCP servers) counted and summed into its memory.
-- **Apps with open ports** are applications that listen on a port, with their own icons. Helpers merge into their application, and Quit goes through the app.
+- **Apps** are the applications you have open, with their own icons, plus any other application that listens on a port. Helpers merge into their application, and Quit goes through the app. Terminals and editors are listed and never quit.
 - **System & tools** are macOS services that listen. They are shown and never signalled.
 - **Recent** holds servers that went away, with Launch to run them again in Terminal with the same command and directory.
 

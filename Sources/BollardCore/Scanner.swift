@@ -185,11 +185,12 @@ public final class Scanner {
 
   /// `sampling` is off while the panel is closed: the menu bar only needs to know which servers
   /// exist, so memory, CPU and working directories are left for the scan that opens it.
-  public func scan(sampling: Bool = true) throws -> Scan {
-    try scan(sampling: sampling, retry: true)
+  /// `apps` are the PIDs of the applications the user has open, which only AppKit knows.
+  public func scan(sampling: Bool = true, apps: Set<Int32> = []) throws -> Scan {
+    try scan(sampling: sampling, apps: apps, retry: true)
   }
 
-  private func scan(sampling: Bool, retry: Bool) throws -> Scan {
+  private func scan(sampling: Bool, apps: Set<Int32>, retry: Bool) throws -> Scan {
     let begin = Date()
     let entries = try Native.table()
     let me = getuid()
@@ -242,14 +243,16 @@ public final class Scanner {
     }
     orphans = orphans.intersection(Set(all.values.map(\.identity)))
     let labels = launcherCache.current(in: all)
-    var workloads = Policy.workloads(all, listeners: listeners, labels: labels, orphans: orphans)
+    var workloads = Policy.workloads(
+      all, listeners: listeners, labels: labels, orphans: orphans, apps: apps)
     // Roots a label has hidden, such as Apple's own agents, stay in the lookup set; dropping them
     // would forget the label and show them again on the next scan.
     let roots = workloads.map(\.root) + labels.keys.compactMap { all[$0] }
     if let fresh = try? launcherCache.update(
       roots: roots, processes: all, lookup: Native.launchdLabels), fresh != labels
     {
-      workloads = Policy.workloads(all, listeners: listeners, labels: fresh, orphans: orphans)
+      workloads = Policy.workloads(
+        all, listeners: listeners, labels: fresh, orphans: orphans, apps: apps)
     }
     // An exec into a program of the same name is only visible in the process generation. Check it
     // for what is on display, where a stale record would mislabel a row or refuse a Stop.
@@ -263,7 +266,7 @@ public final class Scanner {
       known[Key(pid: p.pid, start: p.identity.start)] = nil
       stale = true
     }
-    if stale, retry { return try scan(sampling: sampling, retry: false) }
+    if stale, retry { return try scan(sampling: sampling, apps: apps, retry: false) }
     // Resource sampling only for processes that are displayed.
     var sampled: [Int32: Proc] = [:]
     for index in workloads.indices where sampling {
@@ -319,5 +322,7 @@ public final class Scanner {
 public actor ProcessMonitor {
   private let scanner = Scanner()
   public init() {}
-  public func scan(sampling: Bool) throws -> Scan { try scanner.scan(sampling: sampling) }
+  public func scan(sampling: Bool, apps: Set<Int32>) throws -> Scan {
+    try scanner.scan(sampling: sampling, apps: apps)
+  }
 }

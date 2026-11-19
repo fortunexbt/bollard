@@ -52,7 +52,7 @@ struct Panel: View {
           VStack(spacing: 2) {
             if lanes.isEmpty && recent.isEmpty { empty }
             ForEach(lanes, id: \.lane) { entry in
-              laneHeader(entry.lane.title, key: entry.lane.rawValue, count: entry.rows.count)
+              laneHeader(entry.lane.rawValue, key: entry.lane.rawValue, count: entry.rows.count)
               if store.open(entry.lane) {
                 ForEach(entry.rows) { w in Row(store: store, w: w).id(w.id) }
               }
@@ -140,6 +140,8 @@ struct Panel: View {
         "claude mcp add -s user bollard -- \(Bundle.main.executablePath ?? "bollard") --mcp",
         note: "MCP command copied. Paste it in a terminal.")
     }
+    Divider()
+    Text("Bollard \(version)")
     Button("Quit Bollard") { NSApp.terminate(nil) }.keyboardShortcut("q")
   }
   var filters: some View {

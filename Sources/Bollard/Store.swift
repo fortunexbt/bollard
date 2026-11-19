@@ -18,7 +18,7 @@ enum WorkloadSort: String, CaseIterable {
     didSet { defaults.set(sort.rawValue, forKey: "sort") }
   }
   var collapsed: Set<String> {
-    didSet { defaults.set(Array(collapsed), forKey: "collapsed.3") }
+    didSet { defaults.set(Array(collapsed), forKey: "collapsed.4") }
   }
   var notify: Bool {
     didSet {
@@ -71,7 +71,8 @@ enum WorkloadSort: String, CaseIterable {
   @ObservationIgnored let history = History()
   @ObservationIgnored let notifier = Notifier()
   var isQuiet: Bool {
-    scan?.workloads.allSatisfy { $0.section == .system } == true && error == nil
+    scan?.workloads.allSatisfy { $0.section == .system || $0.section == .apps } == true
+      && error == nil
       && history.recent.isEmpty
   }
   /// The panel's natural height: everything above and below the list, plus the list itself.
@@ -94,8 +95,8 @@ enum WorkloadSort: String, CaseIterable {
   init() {
     sort = WorkloadSort(rawValue: defaults.string(forKey: "sort") ?? "Name") ?? .name
     collapsed = Set(
-      defaults.stringArray(forKey: "collapsed.3") ?? [
-        "Agent commands", "Apps", "System & tools", "Recent",
+      defaults.stringArray(forKey: "collapsed.4") ?? [
+        "Agent commands", "System & tools", "Recent",
       ])
     notify = defaults.object(forKey: "notify") as? Bool ?? true
     hotkeyEnabled = defaults.object(forKey: "hotkey") as? Bool ?? true
@@ -177,7 +178,7 @@ enum WorkloadSort: String, CaseIterable {
         }
       }
       do {
-        let next = try await monitor.scan(sampling: visible)
+        let next = try await monitor.scan(sampling: visible, apps: openApplications())
         let previous = scan
         scan = next
         error = nil

@@ -64,7 +64,6 @@ struct Row: View {
                 Text(store.name(w)).font(.system(size: 13, weight: .medium)).layoutPriority(1)
                 if !w.detail.isEmpty, w.detail != w.name {
                   Text(w.detail).font(.system(size: 12)).foregroundStyle(.secondary)
-                    .truncationMode(.middle)
                 }
               }.lineLimit(1)
               HStack(spacing: 5) {

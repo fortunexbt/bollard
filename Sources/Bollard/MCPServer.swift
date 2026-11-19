@@ -151,7 +151,7 @@ enum MCPServer {
     default: break
     }
     do {
-      let scan = try scanner.scan()
+      let scan = try scanner.scan(apps: openApplications())
       switch name {
       case "list_servers":
         let query = arguments["query"] as? String ?? ""

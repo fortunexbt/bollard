@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.0 — 2026-11-19
+
+- The Apps lane lists every application you have open, with its icon, memory and CPU across its helpers, and Quit. It used to list only applications listening on a port. Apple's applications quit through the application; terminals and editors are shown and never quit.
+- The version is in the ⋯ menu.
+
 ## 3.0.2 — 2026-11-19
 
 Scrolling. 3.0.1 fixed the scans; the list itself was still too long and too busy.
@@ -7,7 +12,6 @@ Scrolling. 3.0.1 fixed the scans; the list itself was still too long and too bus
 - Agent commands lane, collapsed by default: what an agent is running through its shell without a port. With many agents at work these were dozens of Background rows.
 - A shell waiting in a `sleep` loop is described by its loop, not listed as `sleep 5`.
 - Rows no longer light up as they pass under a resting cursor mid-scroll.
-- The Apps lane is titled "Apps with open ports", which is what it has always listed.
 - Debug builds have `--show --scrolltest`, which scrolls the panel and reports late frames.
 
 ## 3.0.1 — 2026-11-19
