@@ -7,9 +7,10 @@ The details behind the [README](../README.md), for 3.0.0.
 Bollard lists every long-lived process tree that belongs to you, unless it is part of macOS, part of an application, or a terminal session you are sitting in. Recognising a program only improves its label.
 
 - **Servers** are anything with a TCP or UDP port. Each row shows the project (its repository's name), what it runs (`next dev`, `worker.py`, `-m http.server`), port chips, the branch, who started it (Claude Code, Codex, Cursor, Terminal, launchd and others), memory, and CPU while it is busy.
-- **Background** is the same without a port. Scripts, workers, watchers, tunnels, launch agents and whatever an agent is running through its shell right now. Unix-domain sockets are shown in the detail. Orphans are marked.
+- **Background** is the same without a port. Scripts, workers, watchers, tunnels, launch agents. Unix-domain sockets are shown in the detail. Orphans are marked.
+- **Agent commands** is what an agent is running through its shell right now without a port: test runs, builds, the loops it waits in. Collapsed until you open it.
 - **Agents** are coding-agent sessions, with the helpers each started directly (its MCP servers) counted and summed into its memory.
-- **Apps** are applications that listen on a port, with their own icons. Helpers merge into their application, and Quit goes through the app.
+- **Apps with open ports** are applications that listen on a port, with their own icons. Helpers merge into their application, and Quit goes through the app.
 - **System & tools** are macOS services that listen. They are shown and never signalled.
 - **Recent** holds servers that went away, with Launch to run them again in Terminal with the same command and directory.
 
