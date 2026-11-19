@@ -72,6 +72,7 @@ struct Panel: View {
           }
         }
         .scrollIndicators(.automatic).frame(maxHeight: .infinity)
+        .onScrollPhaseChange { _, phase in store.scrolling = phase.isScrolling }
         .onChange(of: store.selected) { _, id in
           if let id { withAnimation(.snappy(duration: 0.2)) { proxy.scrollTo(id, anchor: nil) } }
         }

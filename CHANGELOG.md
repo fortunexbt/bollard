@@ -9,6 +9,7 @@ The panel stuttered, badly on a busy Mac. Scans cost about a tenth of the CPU th
 - A process's sockets are read again only when its open files change, with a periodic reread.
 - An exited process is no longer mistaken for one that had exec'd, which made a busy Mac scan twice.
 - While the panel is closed, scans skip memory, CPU and working directories.
+- Scans wait while the list is being scrolled, so a refresh never lands mid-scroll.
 - The editor and agent lists in each row's menu and the application icons are looked up once.
 
 ## 3.0.0 — 2026-11-18

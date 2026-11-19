@@ -77,6 +77,14 @@ enum WorkloadSort: String, CaseIterable {
   /// The panel's natural height: everything above and below the list, plus the list itself.
   var desiredHeight: Double { chromeHeight + listHeight }
   @ObservationIgnored private var refreshPending = false
+  @ObservationIgnored private var refreshDeferred = false
+  @ObservationIgnored var scrolling = false {
+    didSet {
+      guard !scrolling, refreshDeferred else { return }
+      refreshDeferred = false
+      refresh()
+    }
+  }
   @ObservationIgnored private var armTimer: Task<Void, Never>?
   @ObservationIgnored private let monitor = ProcessMonitor()
   @ObservationIgnored private var exits: [Identity: DispatchSourceProcess] = [:]
@@ -147,6 +155,12 @@ enum WorkloadSort: String, CaseIterable {
   // MARK: Scanning
 
   func refresh() {
+    // A new scan redraws every row. While the list is moving that shows up as a dropped frame,
+    // so it waits for the scroll to settle.
+    guard !scrolling else {
+      refreshDeferred = true
+      return
+    }
     guard !busy else {
       refreshPending = true
       return
